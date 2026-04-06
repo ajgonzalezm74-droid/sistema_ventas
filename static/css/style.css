@@ -1,0 +1,917 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --primary: #1976D2;
+    --primary-dark: #1565C0;
+    --primary-light: #42A5F5;
+    --secondary: #FF5722;
+    --success: #4CAF50;
+    --danger: #F44336;
+    --warning: #FF9800;
+    --dark: #333;
+    --gray: #757575;
+    --light-gray: #f5f5f5;
+    --white: #ffffff;
+    --shadow: 0 2px 8px rgba(0,0,0,0.1);
+    --border-radius: 12px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--light-gray);
+    color: var(--dark);
+    padding-bottom: 70px;
+    padding-top: 60px;
+}
+
+/*
+/* App Bar */
+/*-- Estilos para la barra de navegación superior */
+.app-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    background: var(--primary);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    z-index: 1000;
+    box-shadow: var(--shadow);
+}
+
+.app-bar-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 20px;
+    font-weight: 500;
+}
+
+.app-bar-title i {
+    font-size: 24px;
+}
+
+.app-bar-actions {
+    display: flex;
+    gap: 16px;
+}
+
+.app-bar-actions i {
+    font-size: 24px;
+    cursor: pointer;
+    padding: 8px;
+}
+
+
+/* Bottom Navigation */
+/*-- Estilos para la barra de navegación inferior */
+.bottom-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 65px;
+    background: var(--white);
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+    z-index: 1000;
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    color: var(--gray);
+    cursor: pointer;
+    transition: all 0.2s;
+    padding: 8px 12px;
+    border-radius: 24px;
+}
+
+.nav-item i {
+    font-size: 24px;
+}
+
+.nav-item span {
+    font-size: 12px;
+}
+
+.nav-item.active {
+    color: var(--primary);
+    background: rgba(25, 118, 210, 0.1);
+}
+
+
+/* Content */
+/*-- Estilos para el contenedor principal de contenido */
+.content {
+    padding: 16px;
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+    animation: fadeIn 0.3s;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Cards */
+.card {
+    background: var(--white);
+    border-radius: var(--border-radius);
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow);
+}
+
+.card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--light-gray);
+    color: var(--primary);
+}
+
+.card-title i {
+    font-size: 24px;
+}
+
+/*
+/* Forms */
+/*-- Estilos para formularios de ventas, clientes, productos y créditos */
+.form-group {
+    margin-bottom: 16px;
+}
+
+label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: var(--dark);
+}
+
+.form-control {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 16px;
+    transition: border-color 0.2s;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.checkbox-label input {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+}
+
+
+/* Buttons */
+/*-- Estilos para botones primarios, secundarios, outline y bloque */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: white;
+}
+
+.btn-primary:active {
+    background: var(--primary-dark);
+    transform: scale(0.98);
+}
+
+.btn-secondary {
+    background: var(--secondary);
+    color: white;
+}
+
+.btn-outline {
+    background: transparent;
+    border: 1px solid var(--primary);
+    color: var(--primary);
+}
+
+.btn-outline:active {
+    background: rgba(25, 118, 210, 0.1);
+}
+
+.btn-block {
+    width: 100%;
+}
+
+.button-group {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+
+/* Preview Box */
+/*-- Estilos para la sección de vista previa de ventas */
+.preview-box {
+    background: var(--light-gray);
+    padding: 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+}
+
+.preview-title {
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--primary);
+}
+
+.total {
+    font-size: 20px;
+    font-weight: bold;
+    color: var(--success);
+    margin-top: 8px;
+}
+
+
+/* Lists */
+/*-- Estilos para las listas de ventas, clientes, productos y créditos */
+.ventas-list, .clientes-list, .productos-list, .creditos-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.venta-item, .cliente-item, .producto-item, .credito-item {
+    background: var(--light-gray);
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.venta-info, .cliente-info, .producto-info, .credito-info {
+    flex: 1;
+}
+
+.venta-info small, .cliente-info small, .producto-info small {
+    color: var(--gray);
+    font-size: 12px;
+}
+
+.venta-actions, .credito-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-icon {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 8px;
+    border-radius: 50%;
+    transition: background 0.2s;
+}
+
+.btn-icon:active {
+    background: rgba(0,0,0,0.1);
+}
+
+.btn-icon.success { color: var(--success); }
+.btn-icon.danger { color: var(--danger); }
+
+/*-- Estilos para la barra de estado de créditos */
+/* Report Box */
+/* Estilos para reportes mejorados */
+
+.reporte-header {
+    width: 100%;
+}
+
+.reporte-item {
+    display: grid;
+    grid-template-columns: 2fr 0.8fr 1.2fr 1.2fr 1.2fr;
+    gap: 8px;
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+    align-items: center;
+}
+
+
+/* Encabezado de reporte */
+/* Botón activo en reportes */
+.btn-outline.active {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.reporte-item.header {
+    background: var(--primary);
+    color: white;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    font-weight: bold;
+}
+
+.reporte-item.total {
+    background: var(--light-gray);
+    border-radius: 8px;
+    margin-top: 12px;
+    font-weight: bold;
+    border-bottom: none;
+}
+
+.reporte-mes {
+    background: var(--primary);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin: 16px 0 8px 0;
+    font-weight: bold;
+}
+
+.reporte-mes:first-child {
+    margin-top: 0;
+}
+
+
+.success-text {
+    color: var(--success);
+    font-weight: bold;
+}
+
+.warning-text {
+    color: var(--warning);
+    font-weight: bold;
+}
+
+.total-text {
+    color: var(--primary);
+    font-weight: bold;
+}
+
+/* Responsive para reportes */
+@media (max-width: 550px) {
+    .reporte-item {
+        grid-template-columns: 1.5fr 0.6fr 1fr 1fr 1fr;
+        gap: 4px;
+        font-size: 12px;
+    }
+    
+    .reporte-item span, 
+    .reporte-item strong {
+        font-size: 11px;
+    }
+}
+
+
+/* Toast */
+/*-- Estilos para el toast de notificaciones */
+.toast {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--dark);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 24px;
+    font-size: 14px;
+    z-index: 2000;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.toast.show {
+    opacity: 1;
+}
+
+/* Loading */
+/*-- Estilos para el overlay de carga */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 3000;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid var(--white);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+
+/* Badges */
+/*-- Estilos para badges de estado */
+.badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.badge-warning {
+    background: var(--warning);
+    color: white;
+}
+
+.badge-success {
+    background: var(--success);
+    color: white;
+}
+
+.badge-danger {
+    background: var(--danger);
+    color: white;
+}
+
+/* Responsive */
+/*-- Estilos para dispositivos móviles */
+@media (max-width: 480px) {
+    .card {
+        padding: 16px;
+    }
+    
+    .venta-item, .cliente-item, .producto-item {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .venta-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
+
+
+/* Estilos para el carrito de compras */
+.carrito-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+}
+
+.carrito-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 8px;
+    background: var(--light-gray);
+    border-radius: 8px;
+}
+
+.carrito-info {
+    flex: 1;
+}
+
+.carrito-info strong {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 4px;
+}
+
+.carrito-info small {
+    font-size: 11px;
+    color: var(--gray);
+    margin-right: 12px;
+}
+
+.carrito-info span {
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--success);
+}
+
+.carrito-total {
+    text-align: right;
+    padding: 12px;
+    font-size: 18px;
+    border-top: 2px solid var(--light-gray);
+    margin-top: 8px;
+    padding-top: 12px;
+}
+
+.btn-icon.danger {
+    color: var(--danger);
+}
+
+.btn-icon.danger:hover {
+    background: rgba(244, 67, 54, 0.1);
+}
+
+/*Estilos para barra de estado*/ 
+
+/* Barra de estado */
+/* Badges para estados */
+.badge-info {
+    background: #2196F3;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    display: inline-block;
+    margin: 4px 0;
+}
+
+.badge-warning {
+    background: #FF9800;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    display: inline-block;
+    margin: 4px 0;
+}
+
+.badge-danger {
+    background: #F44336;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    display: inline-block;
+    margin: 4px 0;
+}
+
+.credito-info small {
+    display: block;
+    margin: 4px 0;
+}
+
+
+/* Estilos para acciones de productos */
+.producto-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    background: var(--light-gray);
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.producto-info {
+    flex: 1;
+}
+
+.producto-info strong {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 4px;
+}
+
+.producto-info small {
+    font-size: 12px;
+    color: var(--gray);
+}
+
+.producto-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-icon.primary {
+    color: var(--primary);
+}
+
+.btn-icon.primary:hover {
+    background: rgba(25, 118, 210, 0.1);
+}
+
+
+/* Estilos para deuda actualizada */
+.deuda-original {
+    background: #f0f0f0;
+    padding: 8px;
+    border-radius: 6px;
+    margin: 6px 0;
+    font-size: 12px;
+}
+
+.deuda-original small {
+    display: inline-block;
+    margin-right: 12px;
+}
+
+.deuda-actualizada {
+    background: #e3f2fd;
+    padding: 8px;
+    border-radius: 6px;
+    margin: 6px 0;
+}
+
+.deuda-actualizada.warning {
+    background: #fff3e0;
+    border-left: 3px solid #ff9800;
+}
+
+.deuda-actualizada strong {
+    color: #1976d2;
+    font-size: 16px;
+}
+
+.diferencia {
+    display: inline-block;
+    margin-left: 10px;
+    font-weight: bold;
+}
+
+.diferencia.positiva {
+    color: #f44336;
+}
+
+.diferencia.negativa {
+    color: #4caf50;
+}
+
+
+/* Estilos para acciones de créditos */
+.btn-pagar {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    color: white;
+    border: none;
+    border-radius: 25px;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 14px;
+    transition: all 0.3s;
+}
+
+.btn-pagar:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+}
+
+.btn-pagar:active {
+    transform: scale(0.98);
+}
+
+.credito-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+
+/* Estilos para botones pequeños */
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+.text-muted {
+    color: #757575;
+    font-size: 12px;
+}
+
+.btn-icon.secondary {
+    color: #ff9800;
+}
+
+.btn-icon.secondary:hover {
+    background: rgba(255, 152, 0, 0.1);
+}
+
+.credito-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Loading */
+.loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+.loading.show {
+    display: flex;
+}
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid #fff;
+    border-top-color: #1976D2;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Toast */
+.toast {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 24px;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    z-index: 9998;
+}
+.toast.show {
+    opacity: 1;
+}
+
+/* Empty state */
+.empty {
+    text-align: center;
+    color: #999;
+    padding: 20px;
+}
+
+/* Botones */
+.icon-btn {
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    padding: 8px;
+}
+/* Modal */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 500px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-header {
+    padding: 16px;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-body {
+    padding: 16px;
+}
+
+.modal-footer {
+    padding: 16px;
+    border-top: 1px solid #eee;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.close {
+    cursor: pointer;
+    font-size: 24px;
+}
+
+.info-box {
+    background: #e3f2fd;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+}
+
+.historial-box {
+    background: #f5f5f5;
+    padding: 12px;
+    border-radius: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-top: 12px;
+}
+
+.historial-item {
+    padding: 8px;
+    border-bottom: 1px solid #ddd;
+    font-size: 12px;
+}
+
+/* Badges */
+.badge-info { background: #2196F3; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; display: inline-block; margin: 4px 0; }
+.badge-warning { background: #FF9800; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; display: inline-block; margin: 4px 0; }
+.badge-danger { background: #F44336; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; display: inline-block; margin: 4px 0; }
+.badge-success { background: #4CAF50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; display: inline-block; margin: 4px 0; }
+
+.btn-pagar {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    color: white;
+    border: none;
+    border-radius: 25px;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.btn-icon.primary { color: #1976D2; background: none; border: none; cursor: pointer; padding: 8px; border-radius: 50%; }
+.btn-icon.primary:hover { background: rgba(25, 118, 210, 0.1); }
+.btn-icon.danger { color: #F44336; background: none; border: none; cursor: pointer; padding: 8px; border-radius: 50%; }
+
+.deuda-original { background: #f5f5f5; padding: 8px; border-radius: 8px; margin: 8px 0; }
+.deuda-actualizada { background: #e3f2fd; padding: 8px; border-radius: 8px; margin: 8px 0; }
+.deuda-actualizada.warning { background: #fff3e0; border-left: 3px solid #ff9800; }
+
+.credito-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.credito-item { background: white; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+
+.success-text { color: #4CAF50; font-weight: bold; }
+.warning-text { color: #FF9800; font-weight: bold; }
+.info-text { color: #2196F3; font-weight: bold; }
+.total-text { color: #1976D2; font-weight: bold; }

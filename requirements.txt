@@ -1,0 +1,7 @@
+Flask==2.3.3
+flask-cors==4.0.0
+requests==2.31.0
+beautifulsoup4==4.12.2
+gunicorn==21.2.0
+pillow==10.4.0
+qrcode==8.2

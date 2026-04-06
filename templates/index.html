@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <meta name="theme-color" content="#1976D2">
+    <!-- Para PWA -->
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#1976D2">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Sistema de Ventas</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+    <!-- APP BAR -->
+    <header class="app-bar">
+        <div class="app-bar-title">
+            <i class="material-icons">store</i>
+            <span>Ventas Pro</span>
+        </div>
+        <div class="app-bar-actions">
+            <button id="notifyBtn" class="icon-btn"><i class="material-icons">notifications</i></button>
+            <button id="refreshBtn" class="icon-btn"><i class="material-icons">refresh</i></button>
+        </div>
+    </header>
+
+    <!-- CONTENIDO -->
+    <main class="content">
+
+        <!-- ================= VENTAS ================= -->
+        <section id="tab-ventas" class="tab-content active">
+            <div class="card">
+                <h3><i class="material-icons">person</i> Cliente</h3>
+                <select id="venta_cliente" class="form-control">
+                    <option value="">Seleccionar cliente</option>
+                </select>
+            </div>
+
+            <div class="card">
+                <h3><i class="material-icons">add_shopping_cart</i> Agregar Producto</h3>
+                <select id="venta_producto" class="form-control">
+                    <option value="">Seleccionar producto</option>
+                </select>
+                <input type="number" id="venta_cantidad" class="form-control" min="1" value="1">
+                <button class="btn btn-secondary" id="btn_agregar_al_carrito">
+                    <i class="material-icons">add</i> Agregar
+                </button>
+            </div>
+
+            <div class="card">
+                <h3><i class="material-icons">shopping_cart</i> Carrito</h3>
+                <div id="carrito_items" class="carrito-list"><p class="empty">Carrito vacío</p></div>
+                <div class="carrito-total">Total: Bs <span id="total_carrito">0.00</span></div>
+                <label class="checkbox"><input type="checkbox" id="venta_credito"> Vender a crédito</label>
+                <button class="btn btn-primary" id="btn_registrar_venta_multiple">Confirmar Venta</button>
+            </div>
+
+            <div class="card">
+                <h3><i class="material-icons">attach_money</i> Tasa del día</h3>
+                <p>BCV: Bs <span id="tasa_actual">0.00</span></p>
+            </div>
+        </section>
+
+        <!-- ================= CLIENTES ================= -->
+        <section id="tab-clientes" class="tab-content">
+            <div class="card">
+                <h3><i class="material-icons">person_add</i> Nuevo Cliente</h3>
+                <input type="text" id="cliente_nombre" class="form-control" placeholder="Nombre">
+                <input type="tel" id="cliente_telefono" class="form-control" placeholder="Teléfono">
+                <button class="btn btn-primary" id="btn_agregar_cliente">Guardar</button>
+            </div>
+            <div class="card">
+                <h3><i class="material-icons">list</i> Clientes</h3>
+                <div id="lista_clientes"></div>
+            </div>
+        </section>
+
+        <!-- ================= PRODUCTOS ================= -->
+        <section id="tab-productos" class="tab-content">
+            <div class="card">
+                <h3><i class="material-icons">add_box</i> Nuevo Producto</h3>
+                <input type="text" id="producto_descripcion" class="form-control" placeholder="Descripción">
+                <input type="number" id="producto_costo" class="form-control" step="0.01" placeholder="Costo USD">
+                <input type="number" id="producto_stock" class="form-control" placeholder="Stock">
+                <button class="btn btn-primary" id="btn_agregar_producto">Guardar</button>
+            </div>
+            <div class="card">
+                <h3><i class="material-icons">inventory</i> Inventario</h3>
+                <div id="lista_productos"></div>
+            </div>
+        </section>
+
+        <!-- ================= CRÉDITOS ================= -->
+        <section id="tab-creditos" class="tab-content">
+            
+            <div class="card">
+                <h3><i class="material-icons">warning</i> Alertas de Crédito</h3>
+                <button class="btn btn-secondary" id="btn_enviar_recordatorios">
+                    <i class="fab fa-whatsapp"></i> Enviar Recordatorios
+                </button>
+            </div>
+
+            <!-- ========== IMPORTAR VENTAS HISTÓRICAS ========== -->
+            <div class="card">
+                <h3><i class="material-icons">history</i> Importar Ventas Históricas</h3>
+                
+                <div class="form-group">
+                    <label>Cliente</label>
+                    <select id="historial_cliente" class="form-control">
+                        <option value="">Seleccionar cliente</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Producto</label>
+                    <select id="historial_producto" class="form-control">
+                        <option value="">Seleccionar producto</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Cantidad</label>
+                    <input type="number" id="historial_cantidad" class="form-control" value="1" min="1">
+                </div>
+                
+                <div class="form-group">
+                    <label>Fecha de compra</label>
+                    <input type="date" id="historial_fecha" class="form-control">
+                </div>
+                
+                <div class="form-group">
+                    <label>Tasa BCV al momento de la compra</label>
+                    <input type="number" id="historial_tasa" class="form-control" step="0.01" placeholder="Ej: 55.00">
+                </div>
+                
+                <div class="preview-box" id="historial_preview" style="display:none;">
+                    <div class="preview-title">📋 Vista previa</div>
+                    <div>Cliente: <span id="preview_cliente">-</span></div>
+                    <div>Producto: <span id="preview_producto">-</span> x <span id="preview_cantidad">-</span></div>
+                    <div>Total USD: $<span id="preview_usd">0.00</span></div>
+                    <div class="total">Total Bs: Bs <span id="preview_bs">0.00</span></div>
+                    <div><small>Tasa aplicada: Bs <span id="preview_tasa">0.00</span></small></div>
+                </div>
+                
+                <div class="button-group">
+                    <button class="btn btn-secondary" id="btn_agregar_producto_historial">
+                        <i class="material-icons">add</i> Agregar Producto
+                    </button>
+                    <button class="btn btn-primary" id="btn_guardar_venta_historica">
+                        <i class="material-icons">save</i> Guardar Venta Histórica
+                    </button>
+                </div>
+                
+                <div id="lista_productos_historial" class="carrito-list" style="margin-top: 16px;">
+                    <div style="text-align:center; color:#999;">No hay productos agregados</div>
+                </div>
+            </div>
+
+            <!-- ========== CRÉDITOS PENDIENTES ========== -->
+            <div class="card">
+                <h3><i class="material-icons">pending_actions</i> Créditos Pendientes</h3>
+                <div id="lista_creditos"></div>
+            </div>
+
+            <!-- ========== MODAL PARA PAGO PARCIAL ========== -->
+            <div id="modal-pago-parcial" class="modal" style="display:none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3>💰 Registrar Pago Parcial</h3>
+                        <span class="close" onclick="cerrarModalPago()">&times;</span>
+                    </div>
+                    <div class="modal-body">
+                        <div id="info-credito" class="info-box"></div>
+                        <div class="form-group">
+                            <label>Monto a pagar (Bs)</label>
+                            <input type="number" id="monto_pago" class="form-control" step="0.01" placeholder="0.00">
+                        </div>
+                        <div class="form-group">
+                            <label>Observación (opcional)</label>
+                            <input type="text" id="observacion_pago" class="form-control" placeholder="Ej: Abono #1">
+                        </div>
+                        <div id="historial-pagos" class="historial-box">
+                            <strong>Historial de pagos:</strong>
+                            <div id="lista-historial"></div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="cerrarModalPago()">Cancelar</button>
+                        <button class="btn btn-primary" onclick="confirmarPagoParcial()">Registrar Pago</button>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- ================= REPORTES ================= -->
+        <section id="tab-reportes" class="tab-content">
+            <div class="card">
+                <h3><i class="material-icons">tune</i> Filtros</h3>
+                <button class="btn btn-outline" data-reporte="semanal">📊 Semanal</button>
+                <button class="btn btn-outline" data-reporte="mensual">📈 Mensual</button>
+                <button class="btn btn-outline" data-reporte="productos">📦 Por Producto</button>
+            </div>
+            <div class="card">
+                <h3><i class="material-icons">analytics</i> Resultados</h3>
+                <div id="reporte_resultados"></div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- NAVBAR -->
+    <nav class="bottom-nav">
+        <button class="nav-item active" data-tab="ventas"><i class="material-icons">shopping_cart</i><span>Ventas</span></button>
+        <button class="nav-item" data-tab="clientes"><i class="material-icons">people</i><span>Clientes</span></button>
+        <button class="nav-item" data-tab="productos"><i class="material-icons">inventory_2</i><span>Productos</span></button>
+        <button class="nav-item" data-tab="creditos"><i class="material-icons">credit_card</i><span>Créditos</span></button>
+        <button class="nav-item" data-tab="reportes"><i class="material-icons">bar_chart</i><span>Reportes</span></button>
+    </nav>
+
+    <!-- TOAST -->
+    <div id="toast" class="toast"></div>
+
+    <!-- LOADING -->
+    <div id="loading" class="loading"><div class="spinner"></div></div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

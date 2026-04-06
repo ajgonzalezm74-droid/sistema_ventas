@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+ENV/
+
+# Base de datos
+*.db
+*.sqlite
+*.sqlite3
+
+# Archivos temporales
+*.log
+*.tmp
+*.bak
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Recibos generados
+static/recibos/*.png
+
+# Variables de entorno
+.env
