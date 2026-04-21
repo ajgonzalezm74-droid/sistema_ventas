@@ -43,7 +43,7 @@ def actualizar_inventario_multiples(productos, es_venta=True):
         return False
 
 
-def registrar_venta(id_cliente, productos, es_credito=False):
+def registrar_venta(id_cliente, productos, es_credito=False, fecha_manual=None):
     try:
         stock_ok, mensaje = verificar_stock_multiples(productos)
         if not stock_ok:
@@ -80,8 +80,14 @@ def registrar_venta(id_cliente, productos, es_credito=False):
         pagado = 1 if not es_credito else 0
         credito = 1 if es_credito else 0
         
-        cursor.execute("INSERT INTO ventas (id_cliente, total, tasa, credito, pagado, fecha_venta) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", 
-                      (id_cliente, total_venta, tasa_bs, credito, pagado))
+        # Usar fecha manual o fecha actual
+        if fecha_manual:
+            fecha_venta = fecha_manual
+        else:
+            fecha_venta = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        cursor.execute("INSERT INTO ventas (id_cliente, total, tasa, credito, pagado, fecha_venta) VALUES (?, ?, ?, ?, ?, ?)", 
+                      (id_cliente, total_venta, tasa_bs, credito, pagado, fecha_venta))
         id_venta = cursor.lastrowid
         
         for detalle in detalles:
@@ -197,6 +203,7 @@ def pagar_credito_parcial(id_venta, monto_pagado, observacion=""):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+
 def cancelar_venta(id_venta):
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -310,6 +317,7 @@ def ventas_con_retraso():
         print(f"Error en ventas_con_retraso: {e}")
         return []
 
+
 def reporte_ventas(periodo="semanal"):
     """Genera reporte de ventas semanal, mensual o por productos"""
     try:
@@ -320,40 +328,44 @@ def reporte_ventas(periodo="semanal"):
         if periodo == "semanal":
             cursor.execute('''
                 SELECT 
-                    strftime('%d/%m/%Y', MIN(fecha_venta)) || ' - ' || strftime('%d/%m/%Y', MAX(fecha_venta)) as periodo,
+                    CASE 
+                        WHEN MIN(fecha_venta) IS NOT NULL THEN 
+                            strftime('%d/%m/%Y', MIN(fecha_venta)) || ' - ' || strftime('%d/%m/%Y', MAX(fecha_venta))
+                        ELSE 'Fecha no disponible'
+                    END as periodo,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(CASE WHEN pagado = 1 AND credito = 0 THEN total ELSE 0 END), 0) as total_contado,
-                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 0 THEN total ELSE 0 END), 0) as total_credito_pendiente,
-                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 1 THEN total ELSE 0 END), 0) as total_credito_pagado,
-                    COALESCE(SUM(total), 0) as total_bs
+                    SUM(total) as total_bs
                 FROM ventas 
                 WHERE cancelada = 0
                 GROUP BY strftime('%Y-%W', fecha_venta)
                 ORDER BY MIN(fecha_venta) DESC
             ''')
+            
         elif periodo == "mensual":
             cursor.execute('''
                 SELECT 
-                    strftime('%B %Y', fecha_venta) as periodo,
+                    CASE 
+                        WHEN fecha_venta IS NOT NULL THEN strftime('%m/%Y', fecha_venta)
+                        ELSE 'Fecha no registrada'
+                    END as periodo,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(CASE WHEN pagado = 1 AND credito = 0 THEN total ELSE 0 END), 0) as total_contado,
-                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 0 THEN total ELSE 0 END), 0) as total_credito_pendiente,
-                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 1 THEN total ELSE 0 END), 0) as total_credito_pagado,
-                    COALESCE(SUM(total), 0) as total_bs
+                    SUM(total) as total_bs
                 FROM ventas 
                 WHERE cancelada = 0
-                GROUP BY strftime('%Y-%m', fecha_venta)
+                GROUP BY 
+                    CASE 
+                        WHEN fecha_venta IS NOT NULL THEN strftime('%Y-%m', fecha_venta)
+                        ELSE 'sin_fecha'
+                    END
                 ORDER BY MIN(fecha_venta) DESC
             ''')
+            
         elif periodo == "productos":
             cursor.execute('''
                 SELECT 
                     p.descripcion as producto,
                     SUM(dv.cantidad) as unidades_vendidas,
-                    COALESCE(SUM(CASE WHEN v.pagado = 1 AND v.credito = 0 THEN dv.subtotal ELSE 0 END), 0) as total_contado,
-                    COALESCE(SUM(CASE WHEN v.credito = 1 AND v.pagado = 0 THEN dv.subtotal ELSE 0 END), 0) as total_credito_pendiente,
-                    COALESCE(SUM(CASE WHEN v.credito = 1 AND v.pagado = 1 THEN dv.subtotal ELSE 0 END), 0) as total_credito_pagado,
-                    COALESCE(SUM(dv.subtotal), 0) as total_bs
+                    SUM(dv.subtotal) as total_bs
                 FROM detalles_venta dv
                 JOIN productos p ON dv.id_producto = p.id
                 JOIN ventas v ON dv.id_venta = v.id
@@ -469,3 +481,415 @@ def registrar_venta_simple(id_cliente, id_producto, cantidad, es_credito=False):
     productos = [{"id_producto": id_producto, "cantidad": cantidad}]
     return registrar_venta(id_cliente, productos, es_credito)
 
+
+def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas"):
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        filtro_sql = ""
+        if filtro_venta == "contado":
+            filtro_sql = "AND pagado = 1 AND credito = 0"
+        elif filtro_venta == "credito_pendiente":
+            filtro_sql = "AND credito = 1 AND pagado = 0"
+        elif filtro_venta == "credito_pagado":
+            filtro_sql = "AND credito = 1 AND pagado = 1"
+        
+        if tipo == "dia":
+            cursor.execute(f"""
+                SELECT 
+                    strftime('%d/%m/%Y', fecha_venta) as periodo,
+                    COUNT(*) as total_ventas,
+                    COALESCE(SUM(CASE WHEN (pagado = 1 AND credito = 0) OR (credito = 1 AND pagado = 1 AND date(fecha_pago) = date(fecha_venta)) THEN total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 0 THEN total ELSE 0 END), 0) as total_credito_pendiente,
+                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 1 AND date(fecha_pago) > date(fecha_venta) THEN total ELSE 0 END), 0) as total_credito_cancelado,
+                    COALESCE(SUM(total), 0) as total_bs
+                FROM ventas 
+                WHERE cancelada = 0 AND date(fecha_venta) BETWEEN ? AND ? {filtro_sql}
+                GROUP BY date(fecha_venta)
+                ORDER BY fecha_venta ASC
+            """, (fecha_inicio, fecha_fin))
+            
+        elif tipo == "semana":
+            cursor.execute(f"""
+                SELECT 
+                    strftime('%d/%m/%Y', MIN(fecha_venta)) || ' - ' || strftime('%d/%m/%Y', MAX(fecha_venta)) as periodo,
+                    COUNT(*) as total_ventas,
+                    COALESCE(SUM(CASE WHEN (pagado = 1 AND credito = 0) OR (credito = 1 AND pagado = 1 AND date(fecha_pago) = date(fecha_venta)) THEN total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 0 THEN total ELSE 0 END), 0) as total_credito_pendiente,
+                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 1 AND date(fecha_pago) > date(fecha_venta) THEN total ELSE 0 END), 0) as total_credito_cancelado,
+                    COALESCE(SUM(total), 0) as total_bs
+                FROM ventas 
+                WHERE cancelada = 0 AND date(fecha_venta) BETWEEN ? AND ? {filtro_sql}
+                GROUP BY strftime('%Y-%W', fecha_venta)
+                ORDER BY MIN(fecha_venta) ASC
+            """, (fecha_inicio, fecha_fin))
+            
+        elif tipo == "mes":
+            cursor.execute(f"""
+                SELECT 
+                    strftime('%B %Y', fecha_venta) as periodo,
+                    COUNT(*) as total_ventas,
+                    COALESCE(SUM(CASE WHEN (pagado = 1 AND credito = 0) OR (credito = 1 AND pagado = 1 AND date(fecha_pago) = date(fecha_venta)) THEN total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 0 THEN total ELSE 0 END), 0) as total_credito_pendiente,
+                    COALESCE(SUM(CASE WHEN credito = 1 AND pagado = 1 AND date(fecha_pago) > date(fecha_venta) THEN total ELSE 0 END), 0) as total_credito_cancelado,
+                    COALESCE(SUM(total), 0) as total_bs
+                FROM ventas 
+                WHERE cancelada = 0 AND date(fecha_venta) BETWEEN ? AND ? {filtro_sql}
+                GROUP BY strftime('%Y-%m', fecha_venta)
+                ORDER BY MIN(fecha_venta) ASC
+            """, (fecha_inicio, fecha_fin))
+            
+        elif tipo == "productos":
+            cursor.execute(f"""
+                SELECT 
+                    p.descripcion as producto,
+                    SUM(dv.cantidad) as unidades_vendidas,
+                    COALESCE(SUM(CASE WHEN (v.pagado = 1 AND v.credito = 0) OR (v.credito = 1 AND v.pagado = 1 AND date(v.fecha_pago) = date(v.fecha_venta)) THEN dv.subtotal ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN v.credito = 1 AND v.pagado = 0 THEN dv.subtotal ELSE 0 END), 0) as total_credito_pendiente,
+                    COALESCE(SUM(CASE WHEN v.credito = 1 AND v.pagado = 1 AND date(v.fecha_pago) > date(v.fecha_venta) THEN dv.subtotal ELSE 0 END), 0) as total_credito_cancelado,
+                    COALESCE(SUM(dv.subtotal), 0) as total_bs
+                FROM detalles_venta dv
+                JOIN productos p ON dv.id_producto = p.id
+                JOIN ventas v ON dv.id_venta = v.id
+                WHERE v.cancelada = 0 AND date(v.fecha_venta) BETWEEN ? AND ? {filtro_sql}
+                GROUP BY dv.id_producto
+                ORDER BY unidades_vendidas DESC
+            """, (fecha_inicio, fecha_fin))
+        
+        resultados = cursor.fetchall()
+        conn.close()
+        
+        if not resultados:
+            return {
+                'success': True,
+                'data': [],
+                'totales': {'contado': 0, 'credito_pendiente': 0, 'credito_cancelado': 0, 'general': 0}
+            }
+        
+        # Para productos, el formato es diferente
+        if tipo == "productos":
+            data = []
+            for row in resultados:
+                data.append({
+                    'producto': row[0],
+                    'unidades_vendidas': row[1],
+                    'total_contado': row[2],
+                    'total_credito_pendiente': row[3],
+                    'total_credito_cancelado': row[4],
+                    'total_bs': row[5]
+                })
+            
+            return {
+                'success': True,
+                'data': data,
+                'totales': {
+                    'contado': sum(r['total_contado'] for r in data),
+                    'credito_pendiente': sum(r['total_credito_pendiente'] for r in data),
+                    'credito_cancelado': sum(r['total_credito_cancelado'] for r in data),
+                    'general': sum(r['total_bs'] for r in data)
+                }
+            }
+        
+        # Para dia, semana, mes
+        total_contado = sum(r[2] for r in resultados)
+        total_credito_pendiente = sum(r[3] for r in resultados)
+        total_credito_cancelado = sum(r[4] for r in resultados)
+        total_general = sum(r[5] for r in resultados)
+        
+        return {
+            'success': True,
+            'data': [{'periodo': r[0], 'ventas': r[1], 'contado': r[2], 'credito_pendiente': r[3], 'credito_cancelado': r[4], 'total': r[5]} for r in resultados],
+            'totales': {
+                'contado': total_contado,
+                'credito_pendiente': total_credito_pendiente,
+                'credito_cancelado': total_credito_cancelado,
+                'general': total_general
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error en reporte_por_rango: {e}")
+        return {'success': False, 'error': str(e)}
+
+# ========== NUEVAS FUNCIONES PARA CANCELACIÓN GLOBAL Y PAGO CON TASA ==========
+
+def obtener_creditos_agrupados():
+    """Obtiene todos los créditos pendientes agrupados por cliente"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT v.*, c.nombre as cliente_nombre, c.telefono as cliente_telefono
+            FROM ventas v
+            JOIN clientes c ON v.id_cliente = c.id
+            WHERE v.credito = 1 
+            AND v.pagado = 0 
+            AND v.cancelada = 0
+            ORDER BY c.nombre, v.fecha_venta
+        ''')
+        
+        ventas = cursor.fetchall()
+        
+        clientes_creditos = {}
+        for venta in ventas:
+            cliente_id = venta['id_cliente']
+            if cliente_id not in clientes_creditos:
+                clientes_creditos[cliente_id] = {
+                    'cliente_id': cliente_id,
+                    'cliente_nombre': venta['cliente_nombre'],
+                    'cliente_telefono': venta['cliente_telefono'],
+                    'deudas': []
+                }
+            
+            # Obtener productos de esta venta
+            cursor.execute('''
+                SELECT dv.*, p.descripcion
+                FROM detalles_venta dv
+                JOIN productos p ON dv.id_producto = p.id
+                WHERE dv.id_venta = ?
+            ''', (venta['id'],))
+            productos = cursor.fetchall()
+            
+            saldo_pendiente = venta['saldo_pendiente'] if venta['saldo_pendiente'] else venta['total']
+            
+            clientes_creditos[cliente_id]['deudas'].append({
+                'id_venta': venta['id'],
+                'fecha_venta': venta['fecha_venta'],
+                'total': float(venta['total']),
+                'tasa': float(venta['tasa']) if venta['tasa'] else 0,
+                'saldo_pendiente': float(saldo_pendiente),
+                'productos': [{'descripcion': p['descripcion'], 'cantidad': p['cantidad']} for p in productos]
+            })
+        
+        conn.close()
+        return list(clientes_creditos.values())
+    except Exception as e:
+        print(f"Error en obtener_creditos_agrupados: {e}")
+        return []
+
+
+def cancelar_creditos_global(cliente_id, tasa_actual=None):
+    """Cancela todas las deudas pendientes de un cliente de una sola vez"""
+    try:
+        if tasa_actual is None:
+            tasas = exchange.get_all_rates(force_update=False)
+            tasa_actual = tasas.get("bcv_usd", 0)
+        
+        if tasa_actual == 0:
+            return {"success": False, "error": "No se pudo obtener tasa actual"}
+        
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Obtener todas las deudas pendientes del cliente
+        cursor.execute('''
+            SELECT v.*, c.nombre as cliente_nombre, c.telefono
+            FROM ventas v
+            JOIN clientes c ON v.id_cliente = c.id
+            WHERE v.id_cliente = ? 
+            AND v.credito = 1 
+            AND v.pagado = 0 
+            AND v.cancelada = 0
+        ''', (cliente_id,))
+        
+        deudas = cursor.fetchall()
+        
+        if not deudas:
+            conn.close()
+            return {"success": False, "error": "No hay deudas pendientes para este cliente"}
+        
+        total_cancelado_bs = 0
+        deudas_canceladas = []
+        
+        for deuda in deudas:
+            total_usd = deuda['total'] / deuda['tasa'] if deuda['tasa'] > 0 else 0
+            monto_cancelar = total_usd * tasa_actual
+            
+            # Insertar registro de pago
+            cursor.execute('''
+                INSERT INTO pagos_credito (id_venta, monto_pagado, tasa_pago, observacion, fecha_pago)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                deuda['id'],
+                monto_cancelar,
+                tasa_actual,
+                f'CANCELACIÓN GLOBAL - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                datetime.now()
+            ))
+            
+            # Actualizar la venta como pagada
+            cursor.execute('''
+                UPDATE ventas 
+                SET pagado = 1, 
+                    saldo_pendiente = 0,
+                    pagado_parcial = 0,
+                    fecha_pago = ?
+                WHERE id = ?
+            ''', (datetime.now(), deuda['id']))
+            
+            total_cancelado_bs += monto_cancelar
+            
+            # Obtener productos para el recibo
+            cursor.execute('''
+                SELECT dv.*, p.descripcion
+                FROM detalles_venta dv
+                JOIN productos p ON dv.id_producto = p.id
+                WHERE dv.id_venta = ?
+            ''', (deuda['id'],))
+            productos = cursor.fetchall()
+            
+            deudas_canceladas.append({
+                'id_venta': deuda['id'],
+                'fecha_venta': deuda['fecha_venta'],
+                'total': float(deuda['total']),
+                'tasa': float(deuda['tasa']) if deuda['tasa'] else 0,
+                'productos': [{'descripcion': p['descripcion'], 'cantidad': p['cantidad']} for p in productos]
+            })
+        
+        conn.commit()
+        
+        datos_cliente = {
+            'id': cliente_id,
+            'nombre': deudas[0]['cliente_nombre'],
+            'telefono': deudas[0]['telefono']
+        }
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "cliente": datos_cliente,
+            "deudas_canceladas": deudas_canceladas,
+            "total_cancelado_bs": total_cancelado_bs,
+            "tasa_aplicada": tasa_actual,
+            "cantidad_creditos": len(deudas_canceladas)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def pagar_credito_con_tasa(id_venta, monto=0, observacion="", tasa_actual=None):
+    """
+    Paga un crédito individual con la tasa actual.
+    Si monto = 0, paga el total actualizado.
+    """
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT v.total, v.tasa, v.pagado, v.saldo_pendiente, v.credito,
+                   COALESCE((SELECT SUM(monto_pagado) FROM pagos_credito WHERE id_venta = v.id), 0) as total_pagado_anterior,
+                   c.nombre as cliente_nombre, c.telefono
+            FROM ventas v
+            JOIN clientes c ON v.id_cliente = c.id
+            WHERE v.id = ?
+        """, (id_venta,))
+        
+        venta = cursor.fetchone()
+        if not venta:
+            conn.close()
+            return {"success": False, "error": "Venta no encontrada"}
+        
+        total_venta, tasa_venta, pagado_completo, saldo_db, es_credito, total_pagado_anterior, cliente_nombre, cliente_telefono = venta
+        
+        if pagado_completo == 1:
+            conn.close()
+            return {"success": False, "error": "Esta venta ya está pagada completamente"}
+        
+        if es_credito == 0:
+            conn.close()
+            return {"success": False, "error": "Esta venta no es a crédito"}
+        
+        # Obtener tasa actual
+        if tasa_actual is None:
+            tasas = exchange.get_all_rates(force_update=False)
+            tasa_actual = tasas.get("bcv_usd", 0)
+        
+        if tasa_actual == 0:
+            conn.close()
+            return {"success": False, "error": "No se pudo obtener tasa actual"}
+        
+        # Calcular valores
+        total_usd = total_venta / tasa_venta if tasa_venta > 0 else 0
+        total_actualizado = total_usd * tasa_actual
+        deuda_actual = total_actualizado - total_pagado_anterior
+        
+        # Determinar monto a pagar
+        if monto <= 0:
+            monto_pagar = deuda_actual
+            es_pago_total = True
+        else:
+            monto_pagar = min(monto, deuda_actual)
+            es_pago_total = abs(monto_pagar - deuda_actual) <= 0.01
+        
+        if monto_pagar <= 0:
+            conn.close()
+            return {"success": False, "error": "No hay deuda pendiente"}
+        
+        # Registrar pago
+        cursor.execute("""
+            INSERT INTO pagos_credito (id_venta, monto_pagado, tasa_pago, observacion, fecha_pago)
+            VALUES (?, ?, ?, ?, ?)
+        """, (id_venta, monto_pagar, tasa_actual, observacion or ("Pago completo" if es_pago_total else "Pago parcial"), datetime.now()))
+        
+        nuevo_total_pagado = total_pagado_anterior + monto_pagar
+        nuevo_saldo = deuda_actual - monto_pagar
+        
+        if nuevo_saldo <= 0.01:
+            cursor.execute("""
+                UPDATE ventas 
+                SET pagado = 1, 
+                    pagado_parcial = 0, 
+                    saldo_pendiente = 0, 
+                    fecha_pago = CURRENT_TIMESTAMP, 
+                    tasa_pago = ?
+                WHERE id = ?
+            """, (tasa_actual, id_venta))
+            estado = "COMPLETADO"
+            mensaje = f"Pago completado. Total pagado: Bs {nuevo_total_pagado:,.2f}"
+        else:
+            cursor.execute("""
+                UPDATE ventas 
+                SET saldo_pendiente = ?, 
+                    pagado_parcial = 1, 
+                    pagado = 0
+                WHERE id = ?
+            """, (nuevo_saldo, id_venta))
+            estado = "PARCIAL"
+            mensaje = f"Pago parcial registrado. Saldo pendiente: Bs {nuevo_saldo:,.2f}"
+        
+        # Obtener productos para el recibo
+        cursor.execute("""
+            SELECT p.descripcion, dv.cantidad, dv.precio_unitario
+            FROM detalles_venta dv
+            JOIN productos p ON dv.id_producto = p.id
+            WHERE dv.id_venta = ?
+        """, (id_venta,))
+        productos = cursor.fetchall()
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "estado": estado,
+            "monto_pagado": monto_pagar,
+            "total_pagado_acumulado": nuevo_total_pagado,
+            "saldo_pendiente": max(0, nuevo_saldo),
+            "tasa_aplicada": tasa_actual,
+            "tasa_venta": tasa_venta,
+            "total_venta": total_venta,
+            "total_usd": total_usd,
+            "total_actualizado": total_actualizado,
+            "cliente_nombre": cliente_nombre,
+            "cliente_telefono": cliente_telefono,
+            "productos": [{"descripcion": p[0], "cantidad": p[1], "precio": p[2]} for p in productos],
+            "mensaje": mensaje
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}

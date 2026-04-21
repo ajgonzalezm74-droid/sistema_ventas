@@ -4,15 +4,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
     <meta name="theme-color" content="#1976D2">
-    <!-- Para PWA -->
+    
+    <!-- PWA para Android / iOS -->
     <link rel="manifest" href="/static/manifest.json">
-    <meta name="theme-color" content="#1976D2">
     <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Ventas Pro">
+    
     <title>Sistema de Ventas</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Iconos para PWA -->
+    <link rel="icon" type="image/png" sizes="72x72" href="/static/icons/icon-72.png">
+    <link rel="icon" type="image/png" sizes="96x96" href="/static/icons/icon-96.png">
+    <link rel="icon" type="image/png" sizes="128x128" href="/static/icons/icon-128.png">
+    <link rel="icon" type="image/png" sizes="144x144" href="/static/icons/icon-144.png">
+    <link rel="icon" type="image/png" sizes="152x152" href="/static/icons/icon-152.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/static/icons/icon-512.png">
+
+
+    <!-- Chart.js para gráficos -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -33,12 +49,23 @@
 
         <!-- ================= VENTAS ================= -->
         <section id="tab-ventas" class="tab-content active">
+            <!-- Selector de cliente con búsqueda -->
             <div class="card">
                 <h3><i class="material-icons">person</i> Cliente</h3>
-                <select id="venta_cliente" class="form-control">
-                    <option value="">Seleccionar cliente</option>
-                </select>
-            </div>
+                
+                <div class="form-group">
+                    <label>Buscar cliente</label>
+                    <input type="text" id="buscar_cliente" class="form-control" placeholder="Escriba nombre o teléfono...">
+                    <div id="resultado_busqueda" class="busqueda-resultados" style="display:none;"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label>O seleccionar de la lista</label>
+                    <select id="venta_cliente" class="form-control">
+                        <option value="">Seleccionar cliente</option>
+                    </select>
+                </div>
+            </div>              
 
             <div class="card">
                 <h3><i class="material-icons">add_shopping_cart</i> Agregar Producto</h3>
@@ -66,13 +93,40 @@
         </section>
 
         <!-- ================= CLIENTES ================= -->
+        <!-- ================= CLIENTES ================= -->
         <section id="tab-clientes" class="tab-content">
+            
+            <!-- Buscador de clientes -->
+            <div class="card">
+                <h3><i class="material-icons">search</i> Buscar Cliente</h3>
+                <div class="form-group">
+                    <label>Nombre del cliente</label>
+                    <input type="text" id="buscar_cliente_nombre" class="form-control" placeholder="Escriba el nombre del cliente...">
+                    <div id="resultado_busqueda_cliente" class="busqueda-resultados" style="display:none;"></div>
+                </div>
+            </div>
+
+            <!-- Formulario para nuevo cliente -->
             <div class="card">
                 <h3><i class="material-icons">person_add</i> Nuevo Cliente</h3>
                 <input type="text" id="cliente_nombre" class="form-control" placeholder="Nombre">
                 <input type="tel" id="cliente_telefono" class="form-control" placeholder="Teléfono">
                 <button class="btn btn-primary" id="btn_agregar_cliente">Guardar</button>
             </div>
+
+            <!-- Formulario para modificar cliente (oculto inicialmente) -->
+            <div id="modificar_cliente_card" class="card" style="display:none;">
+                <h3><i class="material-icons">edit</i> Modificar Cliente</h3>
+                <input type="hidden" id="modificar_cliente_id">
+                <input type="text" id="modificar_cliente_nombre" class="form-control" placeholder="Nuevo nombre">
+                <input type="tel" id="modificar_cliente_telefono" class="form-control" placeholder="Nuevo teléfono">
+                <div class="button-group">
+                    <button class="btn btn-primary" id="btn_actualizar_cliente">Actualizar</button>
+                    <button class="btn btn-outline" id="btn_cancelar_modificar_cliente">Cancelar</button>
+                </div>
+            </div>
+
+            <!-- Lista de clientes -->
             <div class="card">
                 <h3><i class="material-icons">list</i> Clientes</h3>
                 <div id="lista_clientes"></div>
@@ -80,7 +134,21 @@
         </section>
 
         <!-- ================= PRODUCTOS ================= -->
+        <!-- ================= PRODUCTOS ================= -->
+        <!-- ================= PRODUCTOS ================= -->
         <section id="tab-productos" class="tab-content">
+            
+            <!-- Buscador de productos -->
+            <div class="card">
+                <h3><i class="material-icons">search</i> Buscar Producto</h3>
+                <div class="form-group">
+                    <label>Nombre del producto</label>
+                    <input type="text" id="buscar_producto_nombre" class="form-control" placeholder="Escriba el nombre del producto...">
+                    <div id="resultado_busqueda_producto" class="busqueda-resultados" style="display:none;"></div>
+                </div>
+            </div>
+
+            <!-- Formulario para nuevo producto -->
             <div class="card">
                 <h3><i class="material-icons">add_box</i> Nuevo Producto</h3>
                 <input type="text" id="producto_descripcion" class="form-control" placeholder="Descripción">
@@ -88,10 +156,25 @@
                 <input type="number" id="producto_stock" class="form-control" placeholder="Stock">
                 <button class="btn btn-primary" id="btn_agregar_producto">Guardar</button>
             </div>
-            <div class="card">
-                <h3><i class="material-icons">inventory</i> Inventario</h3>
-                <div id="lista_productos"></div>
+
+            <!-- Formulario para modificar producto (oculto inicialmente) -->
+            <div id="modificar_producto_card" class="card" style="display:none;">
+                <h3><i class="material-icons">edit</i> Modificar Producto</h3>
+                <input type="hidden" id="modificar_producto_id">
+                <input type="text" id="modificar_producto_descripcion" class="form-control" placeholder="Nueva descripción">
+                <input type="number" id="modificar_producto_costo" class="form-control" step="0.01" placeholder="Nuevo costo USD">
+                <input type="number" id="modificar_producto_stock" class="form-control" placeholder="Nuevo stock">
+                <div class="button-group">
+                    <button class="btn btn-primary" id="btn_actualizar_producto">Actualizar</button>
+                    <button class="btn btn-outline" id="btn_cancelar_modificar">Cancelar</button>
+                </div>
             </div>
+
+        <!-- Inventario -->
+        <div class="card">
+            <h3><i class="material-icons">inventory</i> Inventario</h3>
+            <div id="lista_productos"></div>
+        </div>
         </section>
 
         <!-- ================= CRÉDITOS ================= -->
@@ -160,7 +243,7 @@
                 </div>
             </div>
 
-            <!-- ========== CRÉDITOS PENDIENTES ========== -->
+            <!-- ========== CRÉDITOS PENDIENTES (AGRUPADOS POR CLIENTE) ========== -->
             <div class="card">
                 <h3><i class="material-icons">pending_actions</i> Créditos Pendientes</h3>
                 <div id="lista_creditos"></div>
@@ -199,29 +282,143 @@
 
         <!-- ================= REPORTES ================= -->
         <section id="tab-reportes" class="tab-content">
+            
             <div class="card">
-                <h3><i class="material-icons">tune</i> Filtros</h3>
-                <button class="btn btn-outline" data-reporte="semanal">📊 Semanal</button>
-                <button class="btn btn-outline" data-reporte="mensual">📈 Mensual</button>
-                <button class="btn btn-outline" data-reporte="productos">📦 Por Producto</button>
+                <h3><i class="material-icons">tune</i> Filtros de Búsqueda</h3>
+                
+                <div class="form-group">
+                    <label>Tipo de reporte</label>
+                    <select id="reporte_tipo" class="form-control">
+                        <option value="dia">📅 Por Día</option>
+                        <option value="semana">📊 Por Semana</option>
+                        <option value="mes">📈 Por Mes</option>
+                        <option value="productos">📦 Por Producto</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Tipo de venta</label>
+                    <select id="tipo_venta" class="form-control">
+                        <option value="todas">📊 Todas las ventas</option>
+                        <option value="contado">💰 Solo Contado</option>
+                        <option value="credito_pendiente">⚠️ Crédito Pendiente</option>
+                        <option value="credito_pagado">✅ Crédito Pagado</option>
+                    </select>
+                </div>
+                
+                <div id="fechas_container">
+                    <div class="form-group">
+                        <label>Fecha de inicio</label>
+                        <input type="date" id="fecha_inicio" class="form-control">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Fecha de final</label>
+                        <input type="date" id="fecha_fin" class="form-control">
+                    </div>
+                </div>
+                
+                <div class="button-group">
+                    <button class="btn btn-primary" id="btn_aplicar_filtros">
+                        <i class="material-icons">search</i> Aplicar Filtros
+                    </button>
+                    <button class="btn btn-outline" id="btn_limpiar_filtros">
+                        <i class="material-icons">clear</i> Limpiar
+                    </button>
+                </div>
             </div>
+
             <div class="card">
                 <h3><i class="material-icons">analytics</i> Resultados</h3>
-                <div id="reporte_resultados"></div>
+                <div id="reporte_resultados" class="reporte-box">
+                    <div style="text-align:center; color:#999;">Seleccione un tipo de reporte y un rango de fechas</div>
+                </div>
             </div>
+            <!-- ================= GRÁFICOS ================= -->
+            <!-- En la sección de Reportes, reemplaza la parte del gráfico por esto: -->
+            <div class="card">
+                <h3><i class="material-icons">show_chart</i> Gráficos de Ventas</h3>
+                
+                <div class="form-group">
+                    <label>Tipo de gráfico</label>
+                    <select id="grafico_tipo" class="form-control">
+                        <option value="productos">📊 Productos más vendidos</option>
+                    </select>
+                </div>
+                
+                <button class="btn btn-primary" id="btn_actualizar_grafico" style="margin-top: 10px;">
+                    <i class="material-icons">bar_chart</i> Actualizar Gráfico
+                </button>
+            </div>
+
         </section>
+
+   
+
 
     </main>
 
-    <!-- NAVBAR -->
-    <nav class="bottom-nav">
-        <button class="nav-item active" data-tab="ventas"><i class="material-icons">shopping_cart</i><span>Ventas</span></button>
-        <button class="nav-item" data-tab="clientes"><i class="material-icons">people</i><span>Clientes</span></button>
-        <button class="nav-item" data-tab="productos"><i class="material-icons">inventory_2</i><span>Productos</span></button>
-        <button class="nav-item" data-tab="creditos"><i class="material-icons">credit_card</i><span>Créditos</span></button>
-        <button class="nav-item" data-tab="reportes"><i class="material-icons">bar_chart</i><span>Reportes</span></button>
-    </nav>
 
+<!-- MODAL PARA MOSTRAR RECIBO CON OPCIONES DE COMPARTIR -->
+<!-- MODAL PARA MOSTRAR RECIBO CON OPCIONES DE COMPARTIR -->
+    <div id="modalRecibo" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="material-icons">receipt</i> Recibo / Reporte</h3>
+                <span class="close" onclick="cerrarModalRecibo()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="contenedor_imagen_recibo">
+                    <img id="img_recibo" src="" alt="Recibo">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn_descargar_recibo" class="btn">
+                    <i class="material-icons">download</i> Descargar
+                </button>
+                <button id="btn_compartir_recibo" class="btn">
+                    <i class="material-icons">share</i> Compartir
+                </button>
+                <button onclick="cerrarModalRecibo()" class="btn btn-outline">
+                    <i class="material-icons">close</i> Cerrar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NAVBAR -->
+   <!-- BARRA DE NAVEGACIÓN INFERIOR CON TOOLTIPS -->
+    <nav class="bottom-nav">
+        <button class="nav-item active" data-tab="ventas">
+            <i class="material-icons">shopping_cart</i>
+            <span>Ventas</span>
+            <span class="tooltip-text">Registrar ventas</span>
+        </button>
+
+        <button class="nav-item" data-tab="clientes">
+            <i class="material-icons">people</i>
+            <span>Clientes</span>
+            <span class="tooltip-text">Gestionar clientes</span>
+        </button>
+
+        <button class="nav-item" data-tab="productos">
+            <i class="material-icons">inventory_2</i>
+            <span>Productos</span>
+            <span class="tooltip-text">Inventario</span>
+        </button>
+
+        <button class="nav-item" data-tab="creditos">
+            <i class="material-icons">credit_card</i>
+            <span>Créditos</span>
+            <span class="tooltip-text">Cobros y deudas</span>
+        </button>
+
+        <button class="nav-item" data-tab="reportes">
+            <i class="material-icons">bar_chart</i>
+            <span>Reportes</span>
+            <span class="tooltip-text">Estadísticas</span>
+        </button>
+    </nav>
     <!-- TOAST -->
     <div id="toast" class="toast"></div>
 
@@ -229,5 +426,38 @@
     <div id="loading" class="loading"><div class="spinner"></div></div>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    
+    <!-- Función global para cerrar modal (requerida por el HTML) -->
+    <script>
+        function cerrarModalPago() {
+            const modal = document.getElementById('modal-pago-parcial');
+            if (modal) modal.style.display = 'none';
+        }
+        
+        function confirmarPagoParcial() {
+            // Esta función será sobrescrita por main.js
+            console.log('Función confirmarPagoParcial llamada');
+        }
+        
+        function mostrarModalReponer(id, descripcion, costo) {
+            const monto = prompt(`Reponer stock de: ${descripcion}\nCosto actual: $${costo}\n\nIngrese la cantidad a agregar:`);
+            if (monto && parseInt(monto) > 0) {
+                fetch(`/api/productos/reponer/${id}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cantidad: parseInt(monto), costo: costo })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(`✅ Stock actualizado: +${monto} unidades`);
+                        location.reload();
+                    } else {
+                        alert('❌ Error al reponer stock');
+                    }
+                });
+            }
+        }
+    </script>
 </body>
 </html>
