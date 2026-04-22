@@ -6,7 +6,7 @@ from datetime import datetime
 DB_NAME = "ventas.db"
 
 # Usar la dirección IPv4 de Supabase
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:A6f%5BpVeh%23%23.@aws-0-us-east-2.pooler.supabase.com:5432/postgres?sslmode=require')
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:A6f%5BpVeh%23%23.@aws-0-us-east-2.pooler.supabase.com:6543/postgres?sslmode=require')
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
