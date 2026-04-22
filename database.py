@@ -3,10 +3,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 
-# Para compatibilidad con ventas_logic.py que espera DB_NAME
-DB_NAME = "ventas.db"  # ← Agrega esta línea (no se usa realmente, solo para compatibilidad)
+DB_NAME = "ventas.db"
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:A6f%5BpVeh%23%23.@db.hdmothdsswjtfniqvgay.supabase.co:5432/postgres')
+# Usar la dirección IPv4 de Supabase
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:A6f%5BpVeh%23%23.@aws-0-us-east-2.pooler.supabase.com:5432/postgres?sslmode=require')
+
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
