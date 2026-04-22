@@ -141,20 +141,32 @@ def add_client(nombre, telefono):
 def add_client_validado(nombre, telefono, direccion=""):
     """Agrega un nuevo cliente verificando duplicados"""
     try:
+        if telefono:
+            existente = buscar_cliente_por_telefono(telefono)
+            if existente:
+                return {
+                    "success": False, 
+                    "error": f"Ya existe un cliente con el teléfono {telefono}",
+                    "cliente_existente": existente
+                }
+        
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO clientes (nombre, telefono, direccion) VALUES (%s, %s, %s) RETURNING id",
-            (nombre, telefono, direccion)
+            "INSERT INTO clientes (nombre, telefono) VALUES (%s, %s) RETURNING id", 
+            (nombre, telefono)
         )
-        id_cliente = cursor.fetchone()[0]
+        row = cursor.fetchone()
         conn.commit()
         conn.close()
-        return {"success": True, "id": id_cliente}
+        
+        if row is None:
+            return {"success": False, "error": "No se pudo crear el cliente"}
+        
+        return {"success": True, "id": row[0]}
     except Exception as e:
-        print(f"❌ Error agregando cliente: {e}")
+        print(f"❌ Error en add_client_validado: {e}")
         return {"success": False, "error": str(e)}
-
 
 def buscar_cliente_por_telefono(telefono):
     """Busca un cliente por teléfono"""
