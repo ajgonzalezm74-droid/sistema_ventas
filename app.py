@@ -182,6 +182,20 @@ def api_tasa():
     except Exception as e:
         return jsonify({'error': str(e), 'bcv_usd': 55.0, 'bcv_eur': 57.75}), 200
 
+#== TEST ==
+@app.route('/api/test_db')
+def test_db():
+    try:
+        from database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM clientes")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return jsonify({'success': True, 'clientes': count})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 
 # ========== API: CLIENTES ==========
 @app.route('/api/clientes', methods=['GET'])
