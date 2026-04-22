@@ -376,6 +376,13 @@ def api_generar_recibo(id_venta):
 
 
 # ========== INICIAR SERVIDOR ==========
+#if __name__ == '__main__':
+#    port = int(os.environ.get("PORT", 5000))
+#    app.run(host='0.0.0.0', port=port, debug=False)
+    
+    
 if __name__ == '__main__':
+    # Reducir el uso de memoria
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+   # Para producción en Render
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
