@@ -3,8 +3,10 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:A6f%5BpVeh%23%23.@db.hdmothdsswjtfniqvgay.supabase.co:5432/postgres')
+# Para compatibilidad con ventas_logic.py que espera DB_NAME
+DB_NAME = "ventas.db"  # ← Agrega esta línea (no se usa realmente, solo para compatibilidad)
 
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:A6f%5BpVeh%23%23.@db.hdmothdsswjtfniqvgay.supabase.co:5432/postgres')
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
@@ -282,4 +284,4 @@ def get_productos():
 
 
 # ========== ALIAS PARA COMPATIBILIDAD ==========
-get_products = get_productos
+get_products = get_productosDB_NAME = "ventas.db"
