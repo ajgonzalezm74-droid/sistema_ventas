@@ -634,20 +634,21 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
+        # 1. Corregimos los filtros SQL para que usen booleanos correctos de Postgres
         filtro_sql = ""
         if filtro_venta == "contado":
-            filtro_sql = "AND pagado = TRUE AND credito = FALSE"
+            filtro_sql = "AND v.credito = FALSE"
         elif filtro_venta == "credito_pendiente":
-            filtro_sql = "AND credito = TRUE AND pagado = FALSE"
+            filtro_sql = "AND v.credito = TRUE AND v.pagado = FALSE"
         elif filtro_venta == "credito_pagado":
-            filtro_sql = "AND credito = TRUE AND pagado = TRUE"
+            filtro_sql = "AND v.credito = TRUE AND v.pagado = TRUE"
         
         if tipo == "dia":
             cursor.execute(f"""
                 SELECT 
                     DATE(v.fecha_venta) as fecha,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(CASE WHEN v.pagado = TRUE AND v.credito = FALSE THEN v.total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN v.credito = FALSE THEN v.total ELSE 0 END), 0) as total_contado,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = FALSE THEN v.total ELSE 0 END), 0) as total_credito_pendiente,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = TRUE THEN v.total ELSE 0 END), 0) as total_credito_cancelado,
                     COALESCE(SUM(v.total), 0) as total_bs
@@ -658,11 +659,12 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
             """, (fecha_inicio, fecha_fin))
             
         elif tipo == "productos":
+            # CORRECCIÓN CLAVE: p.descripcion en el GROUP BY y v.credito en los CASE
             cursor.execute(f"""
                 SELECT 
                     p.descripcion as producto,
-                    SUM(dv.cantidad) as unidades_vendidas,
-                    COALESCE(SUM(CASE WHEN v.pagado = TRUE AND v.credito = FALSE THEN dv.subtotal ELSE 0 END), 0) as total_contado,
+                    CAST(SUM(dv.cantidad) AS INTEGER) as unidades_vendidas,
+                    COALESCE(SUM(CASE WHEN v.credito = FALSE THEN dv.subtotal ELSE 0 END), 0) as total_contado,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = FALSE THEN dv.subtotal ELSE 0 END), 0) as total_credito_pendiente,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = TRUE THEN dv.subtotal ELSE 0 END), 0) as total_credito_cancelado,
                     COALESCE(SUM(dv.subtotal), 0) as total_bs
@@ -670,8 +672,8 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
                 JOIN productos p ON dv.id_producto = p.id
                 JOIN ventas v ON dv.id_venta = v.id
                 WHERE v.cancelada = FALSE AND DATE(v.fecha_venta) BETWEEN %s AND %s {filtro_sql}
-                GROUP BY dv.id_producto
-                ORDER BY total_bs DESC
+                GROUP BY p.id, p.descripcion
+                ORDER BY unidades_vendidas DESC
             """, (fecha_inicio, fecha_fin))
             
         elif tipo == "semana":
@@ -679,7 +681,7 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
                 SELECT 
                     DATE_TRUNC('week', v.fecha_venta) as semana,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(CASE WHEN v.pagado = TRUE AND v.credito = FALSE THEN v.total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN v.credito = FALSE THEN v.total ELSE 0 END), 0) as total_contado,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = FALSE THEN v.total ELSE 0 END), 0) as total_credito_pendiente,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = TRUE THEN v.total ELSE 0 END), 0) as total_credito_cancelado,
                     COALESCE(SUM(v.total), 0) as total_bs
@@ -694,7 +696,7 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
                 SELECT 
                     DATE_TRUNC('month', v.fecha_venta) as mes,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(CASE WHEN v.pagado = TRUE AND v.credito = FALSE THEN v.total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN v.credito = FALSE THEN v.total ELSE 0 END), 0) as total_contado,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = FALSE THEN v.total ELSE 0 END), 0) as total_credito_pendiente,
                     COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = TRUE THEN v.total ELSE 0 END), 0) as total_credito_cancelado,
                     COALESCE(SUM(v.total), 0) as total_bs
@@ -715,61 +717,57 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
             }
         
         data = []
-        total_contado = 0
-        total_credito_pendiente = 0
-        total_credito_cancelado = 0
-        total_general = 0
+        t_contado, t_pendiente, t_cancelado, t_general = 0, 0, 0, 0
         
         for row in resultados:
             if tipo == "productos":
-                data.append({
+                item = {
                     'producto': row['producto'],
-                    'unidades_vendidas': row['unidades_vendidas'],
+                    'unidades_vendidas': int(row['unidades_vendidas']),
                     'total_contado': float(row['total_contado']),
                     'total_credito_pendiente': float(row['total_credito_pendiente']),
                     'total_credito_cancelado': float(row['total_credito_cancelado']),
                     'total_bs': float(row['total_bs'])
-                })
+                }
             else:
                 if tipo == "dia":
                     periodo = row['fecha'].strftime('%d/%m/%Y')
                 elif tipo == "semana":
                     periodo = row['semana'].strftime('%d/%m/%Y')
                 elif tipo == "mes":
-                    periodo = row['mes'].strftime('%B %Y')
-                else:
-                    periodo = str(row['fecha'])
+                    # Usamos una forma segura para el nombre del mes
+                    periodo = row['mes'].strftime('%m/%Y') 
                 
-                data.append({
+                item = {
                     'periodo': periodo,
                     'ventas': row['total_ventas'],
                     'contado': float(row['total_contado']),
                     'credito_pendiente': float(row['total_credito_pendiente']),
                     'credito_cancelado': float(row['total_credito_cancelado']),
                     'total': float(row['total_bs'])
-                })
+                }
             
-            total_contado += float(row['total_contado'])
-            total_credito_pendiente += float(row['total_credito_pendiente'])
-            total_credito_cancelado += float(row['total_credito_cancelado'])
-            total_general += float(row['total_bs'])
+            data.append(item)
+            t_contado += float(row['total_contado'])
+            t_pendiente += float(row['total_credito_pendiente'] if tipo == "productos" else row['total_credito_pendiente'])
+            t_cancelado += float(row['total_credito_cancelado'] if tipo == "productos" else row['total_credito_cancelado'])
+            t_general += float(row['total_bs'])
         
         return {
             'success': True,
             'data': data,
             'totales': {
-                'contado': total_contado,
-                'credito_pendiente': total_credito_pendiente,
-                'credito_cancelado': total_credito_cancelado,
-                'general': total_general
+                'contado': t_contado,
+                'credito_pendiente': t_pendiente,
+                'credito_cancelado': t_cancelado,
+                'general': t_general
             }
         }
         
     except Exception as e:
         print(f"Error en reporte_por_rango: {e}")
-        import traceback
-        traceback.print_exc()
         return {'success': False, 'error': str(e)}
+
 
 
 def obtener_historial_pagos(id_venta):
