@@ -570,134 +570,177 @@ def api_actualizar_fecha_historica(id_venta):
 
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
 # Importa ReportLab (asegúrate de agregarlo a tu requirements.txt)
+# ========== API: GENERAR PDF DEL REPORTE GLOBAL POR CLIENTE ==========
 @app.route('/api/creditos/reporte_cliente_pdf/<int:id_cliente>', methods=['GET'])
 def api_generar_pdf_reporte_cliente(id_cliente):
-    conn = None
-    cur = None
+    """Genera un PNG con el reporte global de todas las deudas del cliente"""
     try:
+        from PIL import Image, ImageDraw, ImageFont
+        from datetime import datetime
+        import io
+        
         conn = get_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
 
-        cur.execute("SELECT nombre, telefono FROM clientes WHERE id = %s", (id_cliente,))
-        cliente = cur.fetchone()
+        # PostgreSQL usa %s, no ?
+        cursor.execute("SELECT nombre, telefono FROM clientes WHERE id = %s", (id_cliente,))
+        cliente = cursor.fetchone()
         
         if not cliente:
+            conn.close()
             return jsonify({'error': 'Cliente no encontrado'}), 404
 
-        cur.execute("""
-            SELECT v.id, v.total, v.tasa, v.fecha_venta,
+        # PostgreSQL usa TRUE/FALSE, no 1/0
+        cursor.execute("""
+            SELECT v.id, v.fecha_venta, v.total, v.tasa,
                    COALESCE((SELECT SUM(monto_pagado) FROM pagos_credito WHERE id_venta = v.id), 0) as total_pagado
             FROM ventas v
-            WHERE v.id_cliente = %s AND v.credito = true AND v.pagado = false
+            WHERE v.id_cliente = %s AND v.credito = true AND v.cancelada = false
             ORDER BY v.fecha_venta ASC
         """, (id_cliente,))
-        
-        ventas = cur.fetchall()
+
+        ventas = cursor.fetchall()
 
         if not ventas:
-            return jsonify({'error': 'No hay créditos pendientes'}), 404
+            conn.close()
+            return jsonify({'error': 'Cliente no tiene creditos registrados'}), 404
 
+        # Obtener tasa actual
         tasa_actual = obtener_tasa_actual().get("bcv_usd", 55.0)
 
-        buffer = io.BytesIO()
-        c = canvas.Canvas(buffer, pagesize=LETTER)
-        ancho, alto = LETTER
-        
+        # Calcular tamaño de la imagen
+        ancho = 800
+        alto = 500 + (len(ventas) * 150)
+        color_fondo = (255, 255, 255)
+        color_primario = (25, 118, 210)
+        color_exito = (76, 175, 80)
+        color_warning = (255, 152, 0)
+        color_texto = (51, 51, 51)
+        color_gris = (117, 117, 117)
+
+        img = Image.new('RGB', (ancho, alto), color_fondo)
+        draw = ImageDraw.Draw(img)
+
+        # Fuentes (con fallback para Linux)
+        try:
+            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+            font_normal = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+        except:
+            font_titulo = ImageFont.load_default()
+            font_normal = ImageFont.load_default()
+
+        y = 20
+
         # Encabezado
-        c.setFillColor(colors.HexColor("#1976D2"))
-        c.rect(0, alto - 70, ancho, 70, fill=1, stroke=0)
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", 18)
-        c.drawCentredString(ancho/2, alto - 45, "VENTAS PRO")
-        c.setFont("Helvetica", 12)
-        c.drawCentredString(ancho/2, alto - 65, "REPORTE DE CRÉDITOS")
-        
-        y = alto - 105
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, f"Cliente: {cliente['nombre']}")
-        y -= 20
-        c.setFont("Helvetica", 10)
-        c.drawString(50, y, f"Teléfono: {cliente.get('telefono', 'No registrado')}")
-        y -= 20
-        c.drawString(50, y, f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        y -= 20
-        c.drawString(50, y, f"Tasa BCV: Bs {tasa_actual:,.2f}")
-        
-        y -= 30
-        c.line(50, y, ancho-50, y)
-        y -= 25
-        
-        # Encabezados tabla
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(50, y, "ID")
-        c.drawString(100, y, "Fecha")
-        c.drawString(200, y, "Total Bs")
-        c.drawString(300, y, "Pagado")
-        c.drawString(400, y, "Saldo")
-        
-        y -= 15
-        c.line(50, y, ancho-50, y)
-        y -= 15
-        
-        c.setFont("Helvetica", 9)
+        draw.rectangle([0, 0, ancho, 80], fill=color_primario)
+        draw.text((ancho//2 - 40, 30), "VENTAS PRO", font=font_titulo, fill=(255,255,255))
+        draw.text((ancho//2 - 80, 55), "REPORTE GLOBAL DE CREDITOS", font=font_normal, fill=(255,255,255))
+
+        y = 100
+
+        # Datos del cliente
+        draw.text((30, y), f"Cliente: {cliente[0]}", font=font_normal, fill=color_primario)
+        y += 22
+        draw.text((30, y), f"Telefono: {cliente[1] or 'No registrado'}", font=font_normal, fill=color_texto)
+        y += 22
+        draw.text((30, y), f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}", font=font_normal, fill=color_gris)
+        y += 30
+
+        draw.line([30, y, ancho-30, y], fill=color_gris, width=1)
+        y += 15
+
+        draw.text((30, y), "DETALLE DE CREDITOS", font=font_normal, fill=color_primario)
+        y += 25
+
         total_adeudado = 0
-        
-        for v in ventas:
-            total_usd = float(v['total']) / float(v['tasa']) if v['tasa'] > 0 else 0
-            monto_hoy = total_usd * tasa_actual
-            saldo = max(0, monto_hoy - float(v['total_pagado']))
-            
-            if saldo <= 0.01:
-                continue
-                
-            total_adeudado += saldo
-            fecha = v['fecha_venta'].strftime('%d/%m/%Y') if v['fecha_venta'] else '-'
-            
-            if y < 60:
-                c.showPage()
-                y = alto - 50
-                c.setFont("Helvetica", 9)
-            
-            c.drawString(50, y, str(v['id']))
-            c.drawString(100, y, fecha)
-            c.drawString(200, y, f"{monto_hoy:,.2f}")
-            c.drawString(300, y, f"{float(v['total_pagado']):,.2f}")
-            c.drawString(400, y, f"{saldo:,.2f}")
-            y -= 18
-        
-        y -= 15
-        c.line(300, y+10, ancho-50, y+10)
-        c.setFont("Helvetica-Bold", 12)
-        c.setFillColor(colors.HexColor("#1976D2"))
-        c.drawString(300, y, f"TOTAL: Bs {total_adeudado:,.2f}")
-        
-        c.setFillColor(colors.grey)
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(ancho/2, 30, "Documento válido como comprobante")
-        
-        c.save()
-        buffer.seek(0)
-        
-        cur.close()
+
+        for i, venta in enumerate(ventas):
+            id_venta, fecha_venta, total, tasa_venta, total_pagado = venta
+            total = float(total)
+            tasa_venta = float(tasa_venta) if tasa_venta else 55.0
+            total_pagado = float(total_pagado) if total_pagado else 0
+
+            # Obtener productos
+            cursor_prod = conn.cursor()
+            cursor_prod.execute("""
+                SELECT p.descripcion, dv.cantidad
+                FROM detalles_venta dv
+                JOIN productos p ON dv.id_producto = p.id
+                WHERE dv.id_venta = %s
+            """, (id_venta,))
+            productos = cursor_prod.fetchall()
+            cursor_prod.close()
+
+            # Calcular valores
+            total_usd = total / tasa_venta if tasa_venta > 0 else 0
+            total_actualizado = total_usd * tasa_actual
+            saldo_pendiente = total_actualizado - total_pagado
+
+            total_adeudado += max(0, saldo_pendiente)
+
+            # Fondo alternado
+            if i % 2 == 0:
+                draw.rectangle([30, y-5, ancho-30, y+95], fill=(248, 248, 248))
+
+            # Manejar fecha (PostgreSQL devuelve datetime)
+            if hasattr(fecha_venta, 'strftime'):
+                fecha_str = fecha_venta.strftime('%d/%m/%Y')
+            else:
+                fecha_str = str(fecha_venta)[:10]
+
+            draw.text((45, y), f"Venta #{id_venta} - {fecha_str}", font=font_normal, fill=color_primario)
+            y += 18
+
+            # Productos
+            prod_text = ""
+            for idx, p in enumerate(productos[:2]):
+                if idx > 0:
+                    prod_text += ", "
+                prod_text += f"{p[0]} x{p[1]}"
+            if len(productos) > 2:
+                prod_text += f" +{len(productos)-2} mas"
+            draw.text((45, y), prod_text, font=font_normal, fill=color_gris)
+            y += 16
+
+            draw.text((45, y), f"Original: Bs {total_actualizado:,.2f}", font=font_normal, fill=color_texto)
+            y += 16
+
+            draw.text((45, y), f"Pagado: Bs {total_pagado:,.2f}", font=font_normal, fill=color_exito)
+            draw.text((280, y), f"Saldo: Bs {max(0, saldo_pendiente):,.2f}", font=font_normal, fill=color_warning)
+            y += 18
+
+            draw.line([45, y, ancho-45, y], fill=color_gris, width=1)
+            y += 12
+
+        # Total general
+        y += 10
+        draw.rectangle([30, y-10, ancho-30, y+40], fill=color_primario)
+        draw.text((ancho//2 - 120, y), f"TOTAL ADEUDADO: Bs {total_adeudado:,.2f}", font=font_normal, fill=(255,255,255))
+        y += 45
+
+        # Footer
+        draw.line([30, alto-40, ancho-30, alto-40], fill=color_gris, width=1)
+        draw.text((ancho//2 - 100, alto-25), "Documento valido como comprobante", font=font_normal, fill=color_gris)
+        draw.text((ancho//2 - 80, alto-12), "Gracias por confiar en Ventas Pro", font=font_normal, fill=color_gris)
+
         conn.close()
-        
+
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format='PNG', optimize=True)
+        img_bytes.seek(0)
+
         return send_file(
-            buffer, 
-            mimetype='application/pdf', 
+            img_bytes,
+            mimetype='image/png',
             as_attachment=False,
-            download_name=f"Reporte_{cliente['nombre'].replace(' ', '_')}.pdf"
+            download_name=f"reporte_{cliente[0].replace(' ', '_')}.png"
         )
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error generando reporte: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()  
-
 
 
 
