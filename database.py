@@ -119,11 +119,13 @@ def init_db():
 
 
 # ========== CRUD Clientes ==========
+# ========== OBTENER CLIENTES (CORREGIDO - opcional) ==========
 def get_clients(activo=True):
     """Obtiene lista de clientes"""
     try:
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        # ✅ Cambiar %s por su valor directamente o usar %s correctamente
         cursor.execute("SELECT * FROM clientes WHERE activo = %s ORDER BY nombre ASC", (activo,))
         clientes = cursor.fetchall()
         conn.close()
@@ -168,39 +170,44 @@ def add_client_validado(nombre, telefono, direccion=""):
         print(f"❌ Error en add_client_validado: {e}")
         return {"success": False, "error": str(e)}
 
+# ========== BUSCAR CLIENTE POR TELÉFONO (CORREGIDO) ==========
 def buscar_cliente_por_telefono(telefono):
-    """Busca un cliente por teléfono"""
+    """Busca un cliente por teléfono (coincidencia parcial)"""
     try:
         if not telefono:
             return None
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT * FROM clientes WHERE telefono = %s AND activo = TRUE", (telefono,))
+        # ✅ Cambiado = por LIKE para búsqueda parcial
+        cursor.execute("SELECT * FROM clientes WHERE telefono LIKE %s AND activo = TRUE", (f'%{telefono}%',))
         cliente = cursor.fetchone()
         conn.close()
         return dict(cliente) if cliente else None
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error buscar_cliente_por_telefono: {e}")
         return None
 
 
+# ========== BUSCAR CLIENTE POR NOMBRE (CORREGIDO) ==========
 def buscar_cliente_por_nombre(nombre):
-    """Busca clientes por nombre (coincidencia parcial)"""
+    """Busca clientes por nombre (coincidencia parcial, insensible a mayúsculas)"""
     try:
         if not nombre:
             return []
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT * FROM clientes WHERE nombre LIKE %s AND activo = TRUE", (f'%{nombre}%',))
+        # ✅ Cambiado LIKE por ILIKE (insensible a mayúsculas en PostgreSQL)
+        cursor.execute("SELECT * FROM clientes WHERE nombre ILIKE %s AND activo = TRUE", (f'%{nombre}%',))
         clientes = cursor.fetchall()
         conn.close()
         return [dict(row) for row in clientes]
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error buscar_cliente_por_nombre: {e}")
         return []
 
 
 # ========== CRUD Productos ==========
+# ========== OBTENER PRODUCTOS (CORREGIDO) ==========
 def get_productos():
     """Obtiene lista de productos con su inventario"""
     try:
@@ -223,22 +230,30 @@ def get_productos():
         return []
 
 
-def buscar_producto_por_descripcion(descripcion):
-    """Busca un producto por su descripción exacta"""
+# ========== BUSCAR PRODUCTO POR DESCRIPCIÓN (CORREGIDO) ==========
+# ========== BUSCAR PRODUCTOS POR PARTE DE DESCRIPCIÓN (NUEVA) ==========
+def buscar_productos_por_descripcion(descripcion):
+    """Busca productos por coincidencia parcial en descripción"""
     try:
         if not descripcion:
-            return None
+            return []
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT * FROM productos WHERE descripcion = %s AND activo = TRUE", (descripcion,))
-        producto = cursor.fetchone()
+        cursor.execute("""
+            SELECT p.id, p.descripcion, COALESCE(i.cantidad, 0) as cantidad, COALESCE(i.costo, 0) as costo
+            FROM productos p
+            LEFT JOIN inventario i ON p.id = i.id_producto
+            WHERE p.descripcion ILIKE %s AND p.activo = TRUE
+            LIMIT 10
+        """, (f'%{descripcion}%',))
+        productos = cursor.fetchall()
         conn.close()
-        return dict(producto) if producto else None
+        return [dict(row) for row in productose]
     except Exception as e:
-        print(f"❌ Error: {e}")
-        return None
-
-
+        print(f"❌ Error buscar_productos_por_descripcion: {e}")
+        return []
+    
+# ========== AGREGAR PRODUCTO (CORREGIDO) ==========
 def add_product(descripcion, costo, stock=0):
     """Agrega un nuevo producto"""
     try:
@@ -262,6 +277,7 @@ def add_product(descripcion, costo, stock=0):
         return {"success": False, "error": str(e)}
 
 
+# ========== REPONER STOCK (CORREGIDO) ==========
 def reponer_stock(id_producto, cantidad, costo=None):
     """Repone stock de un producto"""
     try:
@@ -275,8 +291,9 @@ def reponer_stock(id_producto, cantidad, costo=None):
             cursor.execute("UPDATE inventario SET cantidad = cantidad + %s WHERE id_producto = %s", (cantidad, id_producto))
         else:
             cursor.execute("INSERT INTO inventario (id_producto, cantidad, costo) VALUES (%s, %s, %s)", 
-                          (id_producto, cantidad, costo or 0))
+                          (id_producto, cantidad, costo if costo else 0))
         
+        # ✅ Solo actualizar costo si se proporcionó un valor positivo
         if costo is not None and costo > 0:
             cursor.execute("UPDATE inventario SET costo = %s WHERE id_producto = %s", (costo, id_producto))
         
@@ -284,6 +301,7 @@ def reponer_stock(id_producto, cantidad, costo=None):
         conn.close()
         return {"success": True}
     except Exception as e:
+        print(f"❌ Error reponer_stock: {e}")
         return {"success": False, "error": str(e)}
 
 
