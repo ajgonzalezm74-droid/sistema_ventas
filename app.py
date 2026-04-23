@@ -564,7 +564,6 @@ def api_actualizar_fecha_historica(id_venta):
 
 
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
-
 @app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
 def api_reporte_cliente_pdf(cliente_id):
     """Genera reporte GLOBAL de TODOS los créditos del cliente con historial de pagos"""
@@ -588,7 +587,7 @@ def api_reporte_cliente_pdf(cliente_id):
             conn.close()
             return jsonify({'error': 'Cliente no encontrado'}), 404
         
-        # 2. Obtener TODOS los créditos del cliente (no pagados)
+        # 2. Obtener TODOS los créditos del cliente
         cursor.execute("""
             SELECT 
                 v.id, 
@@ -607,7 +606,7 @@ def api_reporte_cliente_pdf(cliente_id):
         
         creditos = cursor.fetchall()
         
-        # 3. Para cada crédito, obtener sus pagos
+        # 3. Para cada crédito, obtener sus pagos (SIN abreviamiento)
         creditos_con_pagos = []
         total_global_adeudado = 0
         
@@ -617,9 +616,9 @@ def api_reporte_cliente_pdf(cliente_id):
             total = float(credito[2]) if credito[2] else 0
             tasa_venta = float(credito[3]) if credito[3] else 0
             
-            # Obtener todos los pagos de este crédito
+            # Obtener pagos - SOLO columnas que existen
             cursor.execute("""
-                SELECT id, monto_pagado, fecha_pago, tasa_pago, abreviamiento
+                SELECT id, monto_pagado, fecha_pago, tasa_pago
                 FROM pagos_credito
                 WHERE id_venta = %s
                 ORDER BY fecha_pago DESC
@@ -664,8 +663,7 @@ def api_reporte_cliente_pdf(cliente_id):
                         'id': p[0],
                         'monto': float(p[1]),
                         'fecha': p[2].strftime('%d/%m/%Y %H:%M') if p[2] else '',
-                        'tasa': float(p[3]) if p[3] else 0,
-                        'abreviamiento': p[4] or ''
+                        'tasa': float(p[3]) if p[3] else 0
                     }
                     for p in pagos
                 ]
@@ -675,7 +673,7 @@ def api_reporte_cliente_pdf(cliente_id):
         
         print(f"📊 Créditos encontrados: {len(creditos_con_pagos)}")
         
-        # Si no hay créditos, mostrar mensaje
+        # Si no hay créditos
         if not creditos_con_pagos:
             return f"""
             <!DOCTYPE html>
@@ -686,6 +684,7 @@ def api_reporte_cliente_pdf(cliente_id):
                 <style>
                     body {{ font-family: Arial; text-align: center; padding: 50px; }}
                     .mensaje {{ color: #27ae60; font-size: 18px; }}
+                    button {{ padding: 10px 20px; margin: 10px; cursor: pointer; }}
                 </style>
             </head>
             <body>
@@ -701,7 +700,7 @@ def api_reporte_cliente_pdf(cliente_id):
             </html>
             """, 200, {'Content-Type': 'text/html'}
         
-        # 4. Generar HTML
+        # 4. Generar HTML (sin referencia a abreviamiento)
         html = f"""
         <!DOCTYPE html>
         <html lang="es">
@@ -764,12 +763,12 @@ def api_reporte_cliente_pdf(cliente_id):
                     display: flex;
                     justify-content: space-between;
                     align-items: center;
+                    flex-wrap: wrap;
                 }}
                 .credito-header:hover {{ background: #f0f0f0; }}
                 .credito-titulo {{ font-weight: bold; color: #1976D2; }}
                 .credito-monto {{ font-size: 18px; font-weight: bold; }}
                 .saldo-pendiente {{ color: #e74c3c; }}
-                .pagado-total {{ color: #27ae60; }}
                 .credito-detalle {{
                     padding: 20px;
                     display: none;
@@ -909,7 +908,7 @@ def api_reporte_cliente_pdf(cliente_id):
                 """
                 for prod in credito['productos']:
                     html += f"""
-                        <tr><td>{prod['descripcion']}</td><td>{prod['cantidad']}</td><td>${prod['precio_usd']:.2f}</td></tr>
+                        <td><td>{prod['descripcion']}</td><td>{prod['cantidad']}</td><td>${prod['precio_usd']:.2f}</td></tr>
                     """
                 html += "</tbody></table>"
             
@@ -918,7 +917,7 @@ def api_reporte_cliente_pdf(cliente_id):
                 html += """
                         <strong>💰 Historial de Abonos:</strong>
                         <table class="pagos-table">
-                            <thead><tr><th>Fecha</th><th>Monto (Bs)</th><th>Tasa</th><th>Referencia</th></tr></thead>
+                            <thead><tr><th>Fecha</th><th>Monto (Bs)</th><th>Tasa</th></tr></thead>
                             <tbody>
                 """
                 for pago in credito['pagos']:
@@ -927,7 +926,6 @@ def api_reporte_cliente_pdf(cliente_id):
                             <td>{pago['fecha']}</td>
                             <td>Bs {pago['monto']:,.2f}</td>
                             <td>Bs {pago['tasa']:.2f}</td>
-                            <td>{pago['abreviamiento'] or '-'}</td>
                         </tr>
                     """
                 html += "</tbody></table>"
