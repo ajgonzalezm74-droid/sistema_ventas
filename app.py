@@ -564,23 +564,18 @@ def api_actualizar_fecha_historica(id_venta):
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
 @app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
 def api_reporte_cliente_pdf(cliente_id):
-    """Genera PDF con el reporte de créditos de un cliente específico"""
+    """Genera reporte en HTML que se puede imprimir como PDF"""
     try:
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import letter
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        import io
         from datetime import datetime
         
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Obtener datos del cliente
+        # Obtener datos del cliente (solo columnas que existen)
         cursor.execute("""
-            SELECT id, nombre, telefono, direccion 
+            SELECT id, nombre, telefono 
             FROM clientes 
-            WHERE id = %s
+            WHERE id = %s AND activo = true
         """, (cliente_id,))
         cliente = cursor.fetchone()
         
@@ -595,11 +590,7 @@ def api_reporte_cliente_pdf(cliente_id):
                 v.fecha_venta, 
                 v.total, 
                 COALESCE(v.monto_pagado, 0) as monto_pagado,
-                (v.total - COALESCE(v.monto_pagado, 0)) as saldo,
-                CASE 
-                    WHEN COALESCE(v.monto_pagado, 0) >= v.total THEN 'PAGADO'
-                    ELSE 'PENDIENTE'
-                END as estado
+                (v.total - COALESCE(v.monto_pagado, 0)) as saldo
             FROM ventas v
             WHERE v.id_cliente = %s AND v.credito = true
             ORDER BY v.fecha_venta DESC
@@ -608,86 +599,516 @@ def api_reporte_cliente_pdf(cliente_id):
         creditos = cursor.fetchall()
         conn.close()
         
-        # Crear PDF
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=letter)
-        styles = getSampleStyleSheet()
-        elements = []
+        # Calcular total adeudado
+        total_adeudado = sum(float(c[4]) for c in creditos)
         
-        # Título
-        titulo_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=16,
-            textColor=colors.HexColor('#1976D2'),
-            alignment=1
-        )
-        elements.append(Paragraph("Reporte de Créditos", titulo_style))
-        elements.append(Spacer(1, 10))
-        elements.append(Paragraph(f"Cliente: {cliente[1]}", styles['Heading2']))
-        elements.append(Spacer(1, 5))
-        
-        # Información del cliente
-        total_adeudado = sum(float(c[4]) for c in creditos if c[5] == 'PENDIENTE')
-        info = f"""
-        <b>Teléfono:</b> {cliente[2] if cliente[2] else 'No registrado'}<br/>
-        <b>Total adeudado:</b> Bs {total_adeudado:,.2f}<br/>
-        <b>Total créditos:</b> {len(creditos)}<br/>
-        <b>Fecha reporte:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}
+        # Generar HTML del reporte
+        html = f"""
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Reporte de Créditos - {cliente[1]}</title>
+            <style>
+                * {{
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }}
+                body {{
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    background: #f0f2f5;
+                    padding: 20px;
+                }}
+                .reporte {{
+                    max-width: 1000px;
+                    margin: 0 auto;
+                    background: white;
+                    border-radius: 12px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    overflow: hidden;
+                }}
+                .header {{
+                    background: linear-gradient(135deg, #1976D2, #1565C0);
+                    color: white;
+                    padding: 30px;
+                    text-align: center;
+                }}
+                .header h1 {{
+                    font-size: 28px;
+                    margin-bottom: 5px;
+                }}
+                .header p {{
+                    opacity: 0.9;
+                    font-size: 14px;
+                }}
+                .info-cliente {{
+                    padding: 20px 30px;
+                    background: #f8f9fa;
+                    border-bottom: 1px solid #e0e0e0;
+                }}
+                .info-cliente h3 {{
+                    color: #1976D2;
+                    margin-bottom: 15px;
+                }}
+                .info-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 12px;
+                }}
+                .info-item {{
+                    font-size: 14px;
+                    padding: 8px;
+                    background: white;
+                    border-radius: 6px;
+                }}
+                .info-item strong {{
+                    color: #555;
+                    display: inline-block;
+                    min-width: 80px;
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                }}
+                th, td {{
+                    padding: 12px;
+                    text-align: left;
+                    border-bottom: 1px solid #e0e0e0;
+                }}
+                th {{
+                    background: #f8f9fa;
+                    color: #1976D2;
+                    font-weight: 600;
+                    font-size: 14px;
+                }}
+                td {{
+                    font-size: 14px;
+                }}
+                .saldo {{
+                    font-weight: bold;
+                    color: #e74c3c;
+                }}
+                .total-box {{
+                    background: #e8f5e9;
+                    padding: 20px 30px;
+                    text-align: right;
+                    border-top: 2px solid #4caf50;
+                }}
+                .total-box h2 {{
+                    color: #2e7d32;
+                    font-size: 24px;
+                }}
+                .total-box p {{
+                    color: #666;
+                    font-size: 12px;
+                    margin-top: 5px;
+                }}
+                .footer {{
+                    background: #f8f9fa;
+                    padding: 15px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #999;
+                    border-top: 1px solid #e0e0e0;
+                }}
+                .btn-print {{
+                    position: fixed;
+                    bottom: 20px;
+                    right: 20px;
+                    background: #1976D2;
+                    color: white;
+                    border: none;
+                    padding: 12px 24px;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: bold;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                    transition: all 0.3s;
+                    z-index: 1000;
+                }}
+                .btn-print:hover {{
+                    background: #1565C0;
+                    transform: scale(1.05);
+                }}
+                .no-creditos {{
+                    text-align: center;
+                    padding: 40px;
+                    color: #999;
+                }}
+                @media print {{
+                    body {{
+                        background: white;
+                        padding: 0;
+                    }}
+                    .btn-print {{
+                        display: none;
+                    }}
+                    .header {{
+                        background: #1976D2;
+                        -webkit-print-color-adjust: exact;
+                        print-color-adjust: exact;
+                    }}
+                    th {{
+                        background: #f8f9fa;
+                        -webkit-print-color-adjust: exact;
+                        print-color-adjust: exact;
+                    }}
+                    .total-box {{
+                        background: #e8f5e9;
+                        -webkit-print-color-adjust: exact;
+                        print-color-adjust: exact;
+                    }}
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="reporte">
+                <div class="header">
+                    <h1>📄 VENTAS PRO</h1>
+                    <p>Reporte de Créditos</p>
+                </div>
+                
+                <div class="info-cliente">
+                    <h3>👤 Información del Cliente</h3>
+                    <div class="info-grid">
+                        <div class="info-item"><strong>Nombre:</strong> {cliente[1]}</div>
+                        <div class="info-item"><strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}</div>
+                        <div class="info-item"><strong>Fecha del reporte:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
+                    </div>
+                </div>
+                
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID Venta</th>
+                            <th>Fecha</th>
+                            <th>Total (Bs)</th>
+                            <th>Pagado (Bs)</th>
+                            <th>Saldo Pendiente (Bs)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
         """
-        elements.append(Paragraph(info, styles['Normal']))
-        elements.append(Spacer(1, 20))
         
-        if creditos:
-            # Tabla de créditos
-            data = [['ID', 'Fecha', 'Total Bs', 'Pagado Bs', 'Saldo', 'Estado']]
+        if creditos and len(creditos) > 0:
             for credito in creditos:
-                estado_color = 'green' if credito[5] == 'PAGADO' else 'red'
-                estado_text = f'<font color="{estado_color}">{credito[5]}</font>'
-                
-                # Manejar fecha
+                # Manejar fecha correctamente
                 fecha_venta = credito[1]
-                fecha_str = fecha_venta.strftime('%d/%m/%Y') if fecha_venta and hasattr(fecha_venta, 'strftime') else str(fecha_venta)[:10] if fecha_venta else '-'
+                if fecha_venta and hasattr(fecha_venta, 'strftime'):
+                    fecha_str = fecha_venta.strftime('%d/%m/%Y')
+                else:
+                    fecha_str = str(fecha_venta)[:10] if fecha_venta else '-'
                 
-                data.append([
-                    str(credito[0]),
-                    fecha_str,
-                    f"{float(credito[2]):,.2f}",
-                    f"{float(credito[3]):,.2f}",
-                    f"{float(credito[4]):,.2f}",
-                    estado_text
-                ])
-            
-            # Configurar tabla
-            table = Table(data, colWidths=[40, 80, 90, 90, 90, 80])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 9),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ]))
-            elements.append(table)
+                html += f"""
+                        <tr>
+                            <td>{credito[0]}</td>
+                            <td>{fecha_str}</td>
+                            <td>Bs {float(credito[2]):,.2f}</td>
+                            <td>Bs {float(credito[3]):,.2f}</td>
+                            <td class="saldo">Bs {float(credito[4]):,.2f}</td>
+                        </tr>
+                """
         else:
-            elements.append(Paragraph("No hay créditos registrados para este cliente", styles['Normal']))
+            html += """
+                        <tr>
+                            <td colspan="5" class="no-creditos">✨ Este cliente no tiene créditos pendientes</td>
+                        </tr>
+            """
         
-        # Construir PDF
-        doc.build(elements)
-        buffer.seek(0)
+        html += f"""
+                    </tbody>
+                </table>
+                
+                <div class="total-box">
+                    <h2>Total Adeudado: Bs {total_adeudado:,.2f}</h2>
+                    <p>Monto total pendiente por cobrar</p>
+                </div>
+                
+                <div class="footer">
+                    <p>Reporte generado automáticamente por Ventas Pro • {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
+                    <p style="margin-top: 5px;">© 2024 Ventas Pro - Todos los derechos reservados</p>
+                </div>
+            </div>
+            
+            <button class="btn-print" onclick="window.print()">
+                🖨️ Imprimir / Guardar PDF
+            </button>
+        </body>
+        </html>
+        """
         
-        return send_file(
-            buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f"creditos_{cliente[1].replace(' ', '_')}.pdf"
-        )
+        return html, 200, {'Content-Type': 'text/html'}
         
     except Exception as e:
-        print(f"Error generando PDF: {str(e)}")
+        print(f"❌ Error generando reporte: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500 
+    try:
+        from datetime import datetime
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener datos del cliente (sin 'direccion')
+        cursor.execute("""
+            SELECT id, nombre, telefono 
+            FROM clientes 
+            WHERE id = %s
+        """, (cliente_id,))
+        cliente = cursor.fetchone()
+        
+        if not cliente:
+            conn.close()
+            return jsonify({'error': 'Cliente no encontrado'}), 404
+        
+        # Obtener créditos
+        cursor.execute("""
+            SELECT 
+                v.id, 
+                v.fecha_venta, 
+                v.total, 
+                COALESCE(v.monto_pagado, 0) as monto_pagado,
+                (v.total - COALESCE(v.monto_pagado, 0)) as saldo
+            FROM ventas v
+            WHERE v.id_cliente = %s AND v.credito = true
+            ORDER BY v.fecha_venta DESC
+        """, (cliente_id,))
+        
+        creditos = cursor.fetchall()
+        conn.close()
+        
+        # Calcular totales
+        total_adeudado = sum(float(c[4]) for c in creditos)
+        
+        # Generar HTML
+        html = f"""
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Reporte de Créditos - {cliente[1]}</title>
+            <style>
+                * {{
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }}
+                body {{
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    background: #f0f2f5;
+                    padding: 20px;
+                }}
+                .reporte {{
+                    max-width: 1000px;
+                    margin: 0 auto;
+                    background: white;
+                    border-radius: 12px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    overflow: hidden;
+                }}
+                .header {{
+                    background: linear-gradient(135deg, #1976D2, #1565C0);
+                    color: white;
+                    padding: 30px;
+                    text-align: center;
+                }}
+                .header h1 {{
+                    font-size: 28px;
+                    margin-bottom: 5px;
+                }}
+                .header p {{
+                    opacity: 0.9;
+                    font-size: 14px;
+                }}
+                .info-cliente {{
+                    padding: 20px 30px;
+                    background: #f8f9fa;
+                    border-bottom: 1px solid #e0e0e0;
+                }}
+                .info-cliente h3 {{
+                    color: #1976D2;
+                    margin-bottom: 10px;
+                }}
+                .info-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 10px;
+                }}
+                .info-item {{
+                    font-size: 14px;
+                }}
+                .info-item strong {{
+                    color: #555;
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                }}
+                th, td {{
+                    padding: 12px;
+                    text-align: left;
+                    border-bottom: 1px solid #e0e0e0;
+                }}
+                th {{
+                    background: #f8f9fa;
+                    color: #1976D2;
+                    font-weight: 600;
+                    font-size: 14px;
+                }}
+                td {{
+                    font-size: 14px;
+                }}
+                .saldo {{
+                    font-weight: bold;
+                    color: #e74c3c;
+                }}
+                .total-box {{
+                    background: #e8f5e9;
+                    padding: 20px 30px;
+                    text-align: right;
+                    border-top: 2px solid #4caf50;
+                }}
+                .total-box h2 {{
+                    color: #2e7d32;
+                    font-size: 24px;
+                }}
+                .total-box p {{
+                    color: #666;
+                    font-size: 12px;
+                    margin-top: 5px;
+                }}
+                .footer {{
+                    background: #f8f9fa;
+                    padding: 15px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #999;
+                    border-top: 1px solid #e0e0e0;
+                }}
+                .btn-print {{
+                    position: fixed;
+                    bottom: 20px;
+                    right: 20px;
+                    background: #1976D2;
+                    color: white;
+                    border: none;
+                    padding: 12px 24px;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: bold;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                    transition: all 0.3s;
+                    z-index: 1000;
+                }}
+                .btn-print:hover {{
+                    background: #1565C0;
+                    transform: scale(1.05);
+                }}
+                @media print {{
+                    body {{
+                        background: white;
+                        padding: 0;
+                    }}
+                    .btn-print {{
+                        display: none;
+                    }}
+                    .header {{
+                        background: #1976D2;
+                        -webkit-print-color-adjust: exact;
+                        print-color-adjust: exact;
+                    }}
+                    th {{
+                        background: #f8f9fa;
+                        -webkit-print-color-adjust: exact;
+                        print-color-adjust: exact;
+                    }}
+                    .total-box {{
+                        background: #e8f5e9;
+                        -webkit-print-color-adjust: exact;
+                        print-color-adjust: exact;
+                    }}
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="reporte">
+                <div class="header">
+                    <h1>📄 VENTAS PRO</h1>
+                    <p>Reporte de Créditos</p>
+                </div>
+                
+                <div class="info-cliente">
+                    <h3>👤 Información del Cliente</h3>
+                    <div class="info-grid">
+                        <div class="info-item"><strong>Nombre:</strong> {cliente[1]}</div>
+                        <div class="info-item"><strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}</div>
+                        <div class="info-item"><strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
+                    </div>
+                </div>
+                
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Fecha Venta</th>
+                            <th>Total Bs</th>
+                            <th>Pagado Bs</th>
+                            <th>Saldo Pendiente</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        """
+        
+        if creditos:
+            for credito in creditos:
+                fecha_str = credito[1].strftime('%d/%m/%Y') if credito[1] and hasattr(credito[1], 'strftime') else str(credito[1])[:10] if credito[1] else '-'
+                html += f"""
+                        <tr>
+                            <td>{credito[0]}</td>
+                            <td>{fecha_str}</td>
+                            <td>Bs {float(credito[2]):,.2f}</td>
+                            <td>Bs {float(credito[3]):,.2f}</td>
+                            <td class="saldo">Bs {float(credito[4]):,.2f}</td>
+                        </tr>
+                """
+        else:
+            html += """
+                        <tr>
+                            <td colspan="5" style="text-align: center;">No hay créditos registrados para este cliente</td>
+                        </tr>
+            """
+        
+        html += f"""
+                    </tbody>
+                </table>
+                
+                <div class="total-box">
+                    <h2>Total Adeudado: Bs {total_adeudado:,.2f}</h2>
+                    <p>Monto total pendiente por cobrar</p>
+                </div>
+                
+                <div class="footer">
+                    <p>Reporte generado automáticamente por Ventas Pro • {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
+                </div>
+            </div>
+            
+            <button class="btn-print" onclick="window.print()">
+                🖨️ Imprimir / Guardar PDF
+            </button>
+        </body>
+        </html>
+        """
+        
+        return html, 200, {'Content-Type': 'text/html'}
+        
+    except Exception as e:
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
