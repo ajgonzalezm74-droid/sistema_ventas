@@ -7,3 +7,4 @@ pillow==10.4.0
 qrcode==8.2
 psycopg2-binary==2.9.9
 reportlab==4.0.4
+supabase==2.4.0

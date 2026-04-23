@@ -20,6 +20,11 @@ from ventas_logic import (
     cancelar_creditos_global,
     pagar_credito_con_tasa
 )
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import LETTER
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+
 from datetime import datetime
 import os
 import psycopg2
@@ -564,252 +569,135 @@ def api_actualizar_fecha_historica(id_venta):
 
 
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
-@app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
-def api_reporte_cliente_pdf(cliente_id):
-    """Genera reporte de créditos en HTML - Versión corregida que sí muestra datos"""
+# Importa ReportLab (asegúrate de agregarlo a tu requirements.txt)
+
+@app.route('/api/creditos/reporte_cliente_pdf/<int:id_cliente>', methods=['GET'])
+def api_generar_pdf_reporte_cliente(id_cliente):
+    """Genera un PDF de texto real usando datos de Supabase"""
     try:
-        from datetime import datetime
-        
-        print(f"\n🔵 ===== REPORTE CRÉDITOS CLIENTE {cliente_id} =====")
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener cliente
-        cursor.execute("SELECT id, nombre, telefono FROM clientes WHERE id = %s", (cliente_id,))
-        cliente = cursor.fetchone()
-        
+        # 1. CONSULTA A SUPABASE (Reemplazando SQLite)
+        # Traer datos del cliente
+        res_cliente = supabase.table('clientes').select('nombre, telefono').eq('id', id_cliente).single().execute()
+        cliente = res_cliente.data
         if not cliente:
-            conn.close()
             return jsonify({'error': 'Cliente no encontrado'}), 404
+
+        # Traer ventas a crédito no canceladas
+        res_ventas = supabase.table('ventas').select('*').eq('id_cliente', id_cliente).eq('credito', True).eq('cancelada', False).order('fecha_venta').execute()
+        ventas = res_ventas.data
+
+        if not ventas:
+            return jsonify({'error': 'Cliente no tiene créditos registrados'}), 404
+
+        tasa_actual = obtener_tasa_actual().get("bcv_usd", 55.0)
+
+        # 2. CONFIGURACIÓN DEL PDF
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=LETTER)
+        ancho, alto = LETTER
+        y = alto - 50  # Punto de inicio arriba
+
+        # Encabezado
+        c.setFillColor(colors.HexColor("#1976D2"))
+        c.rect(0, alto - 80, ancho, 80, fill=1, stroke=0)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 18)
+        c.drawCentredString(ancho/2, alto - 45, "VENTAS PRO")
+        c.setFont("Helvetica", 12)
+        c.drawCentredString(ancho/2, alto - 65, "REPORTE GLOBAL DE CRÉDITOS")
+
+        # Datos del Cliente
+        y = alto - 110
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(40, y, f"Cliente: {cliente['nombre']}")
+        c.setFont("Helvetica", 10)
+        y -= 15
+        c.drawString(40, y, f"Teléfono: {cliente.get('telefono') or 'No registrado'}")
+        y -= 15
+        c.drawString(40, y, f"Fecha de reporte: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         
-        print(f"✅ Cliente: {cliente[1]}")
-        
-        # Obtener TODAS las ventas a crédito NO pagadas
-        cursor.execute("""
-            SELECT v.id, v.fecha_venta, v.total, v.tasa
-            FROM ventas v
-            WHERE v.id_cliente = %s AND v.credito = true AND v.pagado = false
-            ORDER BY v.fecha_venta DESC
-        """, (cliente_id,))
-        
-        creditos = cursor.fetchall()
-        print(f"💰 Créditos encontrados: {len(creditos)}")
-        
-        # Obtener tasa actual
-        tasa_response = obtener_tasa_actual()
-        tasa_actual = tasa_response.get('bcv_usd', 55.0)
-        print(f"📈 Tasa actual: Bs {tasa_actual}")
-        
-        # Procesar deudas y construir HTML directamente
-        total_global = 0
-        html_content = ""
-        
-        for credito in creditos:
-            id_venta = credito[0]
-            fecha_venta = credito[1]
-            total = float(credito[2]) if credito[2] else 0
-            tasa_venta = float(credito[3]) if credito[3] else 55.0
+        y -= 20
+        c.setStrokeColor(colors.lightgrey)
+        c.line(40, y, ancho-40, y)
+        y -= 25
+
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(40, y, "DETALLE DE CRÉDITOS")
+        y -= 20
+
+        total_adeudado = 0
+
+        # 3. LISTADO DE VENTAS
+        for venta in ventas:
+            # Consultar detalles de productos en Supabase para esta venta
+            res_detalles = supabase.table('detalles_venta').select('cantidad, productos(descripcion)').eq('id_venta', venta['id']).execute()
+            detalles = res_detalles.data
+
+            # Consultar total pagado en Supabase
+            res_pagos = supabase.table('pagos_credito').select('monto_pagado').eq('id_venta', venta['id']).execute()
+            total_pagado = sum(p['monto_pagado'] for p in res_pagos.data)
+
+            total_usd = venta['total'] / venta['tasa'] if venta['tasa'] > 0 else 0
+            total_actualizado = total_usd * tasa_actual
+            saldo_pendiente = max(0, total_actualizado - total_pagado)
+            total_adeudado += saldo_pendiente
+
+            # Verificar si necesitamos otra página
+            if y < 100:
+                c.showPage()
+                y = alto - 50
+
+            # Dibujar cuadro de venta
+            c.setStrokeColor(colors.HexColor("#1976D2"))
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(50, y, f"Venta #{venta['id']} - Fecha: {venta['fecha_venta'][:10]}")
+            y -= 15
             
-            print(f"\n   📋 Venta #{id_venta}: total={total}, tasa_venta={tasa_venta}")
+            c.setFont("Helvetica-Oblique", 9)
+            c.setFillColor(colors.grey)
+            prods = ", ".join([f"{d['productos']['descripcion']} (x{d['cantidad']})" for d in detalles[:3]])
+            c.drawString(60, y, prods)
+            y -= 15
+
+            c.setFillColor(colors.black)
+            c.setFont("Helvetica", 9)
+            c.drawString(60, y, f"Original: Bs {total_actualizado:,.2f}")
+            c.setFillColor(colors.darkgreen)
+            c.drawString(180, y, f"Pagado: Bs {total_pagado:,.2f}")
+            c.setFillColor(colors.red)
+            c.drawString(300, y, f"Saldo: Bs {saldo_pendiente:,.2f}")
             
-            # Obtener pagos
-            cursor.execute("""
-                SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado
-                FROM pagos_credito
-                WHERE id_venta = %s
-            """, (id_venta,))
-            total_pagado = float(cursor.fetchone()[0] or 0)
-            print(f"      Pagos registrados: Bs {total_pagado}")
-            
-            # Calcular saldo
-            saldo = total - total_pagado
-            print(f"      Saldo calculado: Bs {saldo}")
-            
-            if saldo <= 0.01:
-                print(f"      ⏭️ Saldo cero, saltando")
-                continue
-            
-            total_global += saldo
-            
-            # Obtener productos
-            cursor.execute("""
-                SELECT p.descripcion, dv.cantidad
-                FROM detalles_venta dv
-                JOIN productos p ON dv.id_producto = p.id
-                WHERE dv.id_venta = %s
-            """, (id_venta,))
-            productos = cursor.fetchall()
-            
-            fecha_str = fecha_venta.strftime('%d/%m/%Y') if fecha_venta else '-'
-            productos_str = ", ".join([f"{p[0]} x{p[1]}" for p in productos]) if productos else "Sin productos"
-            
-            # Agregar al HTML
-            html_content += f"""
-            <div style="border:1px solid #ddd; margin:15px; padding:15px; border-radius:8px;">
-                <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                    <strong style="color:#1976D2;">📅 {fecha_str}</strong>
-                    <strong style="color:#e74c3c;">Saldo: Bs {saldo:,.2f}</strong>
-                </div>
-                <table style="width:100%; border-collapse:collapse;">
-                    <tr>
-                        <td style="padding:5px;"><strong>💰 Deuda original:</strong></td>
-                        <td style="padding:5px;">Bs {total:,.2f}</td>
-                        <td style="padding:5px;"><strong>✅ Pagado:</strong></td>
-                        <td style="padding:5px;">Bs {total_pagado:,.2f}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding:5px;"><strong>📈 Tasa al vender:</strong></td>
-                        <td style="padding:5px;">Bs {tasa_venta:,.2f}</td>
-                        <td style="padding:5px;"><strong>💵 Tasa actual:</strong></td>
-                        <td style="padding:5px;">Bs {tasa_actual:,.2f}</td>
-                    </tr>
-                </table>
-                <div style="background:#f5f5f5; padding:8px; margin-top:10px; border-radius:5px;">
-                    <strong>📦 Productos:</strong> {productos_str}
-                </div>
-            </div>
-            """
+            y -= 10
+            c.setStrokeColor(colors.whitesmoke)
+            c.line(50, y, ancho-50, y)
+            y -= 20
+
+        # Resumen Final
+        y -= 20
+        c.setFillColor(colors.HexColor("#1976D2"))
+        c.rect(40, y-10, ancho-80, 30, fill=1, stroke=0)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 13)
+        c.drawCentredString(ancho/2, y, f"TOTAL ADEUDADO: Bs {total_adeudado:,.2f}")
+
+        # Pie de página
+        c.setFillColor(colors.grey)
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(ancho/2, 30, "Documento válido como comprobante de cuenta.")
         
-        conn.close()
-        
-        print(f"\n💰 TOTAL GLOBAL ADEUDADO: Bs {total_global}")
-        print(f"📊 Deudas procesadas: {len(creditos) if creditos else 0}")
-        
-        # Construir HTML completo
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>Reporte de Créditos - {cliente[1]}</title>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    margin: 20px;
-                    background: #f0f2f5;
-                }}
-                .container {{
-                    max-width: 800px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 10px;
-                    overflow: hidden;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                }}
-                .header {{
-                    background: #1976D2;
-                    color: white;
-                    padding: 20px;
-                    text-align: center;
-                }}
-                .header h1 {{
-                    margin: 0;
-                    font-size: 24px;
-                }}
-                .header p {{
-                    margin: 5px 0 0;
-                    opacity: 0.9;
-                }}
-                .info {{
-                    background: #f8f9fa;
-                    padding: 15px 20px;
-                    border-bottom: 1px solid #ddd;
-                }}
-                .info p {{
-                    margin: 5px 0;
-                }}
-                .total {{
-                    background: #2c3e50;
-                    color: white;
-                    padding: 15px 20px;
-                    text-align: right;
-                    font-size: 18px;
-                    font-weight: bold;
-                }}
-                .total span {{
-                    color: #27ae60;
-                }}
-                .btn-print {{
-                    display: block;
-                    width: 200px;
-                    margin: 20px auto;
-                    padding: 10px;
-                    background: #1976D2;
-                    color: white;
-                    text-align: center;
-                    border: none;
-                    border-radius: 5px;
-                    cursor: pointer;
-                    font-size: 16px;
-                }}
-                .btn-print:hover {{
-                    background: #0d3d6b;
-                }}
-                .no-deudas {{
-                    text-align: center;
-                    padding: 40px;
-                    color: #27ae60;
-                    font-size: 18px;
-                }}
-                @media print {{
-                    body {{
-                        background: white;
-                        margin: 0;
-                        padding: 0;
-                    }}
-                    .btn-print {{
-                        display: none;
-                    }}
-                    .container {{
-                        box-shadow: none;
-                    }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>📄 VENTAS PRO</h1>
-                    <p>Estado de Cuenta - Créditos Pendientes</p>
-                </div>
-                
-                <div class="info">
-                    <p><strong>Cliente:</strong> {cliente[1]}</p>
-                    <p><strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}</p>
-                    <p><strong>Fecha reporte:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
-                    <p><strong>Tasa BCV actual:</strong> Bs {tasa_actual:,.2f}</p>
-                </div>
-        """
-        
-        if html_content:
-            html += html_content
-            html += f"""
-                <div class="total">
-                    💰 TOTAL ADEUDADO: <span>Bs {total_global:,.2f}</span>
-                </div>
-            """
-        else:
-            html += """
-                <div class="no-deudas">
-                    ✅ ¡No hay deudas pendientes!<br>
-                    <small>Todos los créditos están al día</small>
-                </div>
-            """
-        
-        html += """
-                <button class="btn-print" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
-            </div>
-        </body>
-        </html>
-        """
-        
-        return html, 200, {'Content-Type': 'text/html'}
-        
+        c.save()
+        buffer.seek(0)
+
+        return send_file(
+            buffer,
+            mimetype='application/pdf',
+            as_attachment=False,
+            download_name=f"Reporte_{cliente['nombre']}.pdf"
+        )
+
     except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {e}")
         return jsonify({'error': str(e)}), 500
     
     
