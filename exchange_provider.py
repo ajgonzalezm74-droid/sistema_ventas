@@ -21,8 +21,8 @@ class ExchangeProvider:
                 ultima_fecha = self.get_last_rate_date()
                 if ultima_fecha:
                     horas_transcurridas = (datetime.now() - ultima_fecha).total_seconds() / 3600
-                    # Si la tasa tiene menos de 24 horas, usarla
-                    if horas_transcurridas < 24:
+                    # Si la tasa tiene menos de 16 horas, usarla
+                    if horas_transcurridas < 16:
                         print(f"📊 Usando tasa guardada: {tasa_guardada} (de hace {horas_transcurridas:.1f} horas)")
                         return {
                             "bcv_usd": tasa_guardada,
