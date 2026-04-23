@@ -375,6 +375,128 @@ def api_generar_recibo(id_venta):
         return jsonify({'error': str(e)}), 500
 
 
+
+# ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
+@app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
+def api_reporte_cliente_pdf(cliente_id):
+    """Genera PDF con el reporte de créditos de un cliente específico"""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        import io
+        
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Obtener datos del cliente
+        cursor.execute("""
+            SELECT id, nombre, telefono, direccion 
+            FROM clientes 
+            WHERE id = %s
+        """, (cliente_id,))
+        cliente = cursor.fetchone()
+        
+        if not cliente:
+            conn.close()
+            return jsonify({'error': 'Cliente no encontrado'}), 404
+        
+        # Obtener créditos del cliente
+        cursor.execute("""
+            SELECT v.id, v.fecha_venta, v.total, v.monto_pagado, 
+                   COALESCE(v.monto_pagado, 0) as pagado,
+                   (v.total - COALESCE(v.monto_pagado, 0)) as saldo,
+                   CASE 
+                       WHEN v.monto_pagado IS NULL OR v.monto_pagado < v.total THEN 'PENDIENTE'
+                       ELSE 'PAGADO'
+                   END as estado
+            FROM ventas v
+            WHERE v.id_cliente = %s AND v.credito = true
+            ORDER BY v.fecha_venta DESC
+        """, (cliente_id,))
+        creditos = cursor.fetchall()
+        conn.close()
+        
+        # Crear PDF
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = []
+        
+        # Título
+        titulo_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            textColor=colors.HexColor('#1976D2'),
+            alignment=1
+        )
+        elements.append(Paragraph(f"Reporte de Créditos", titulo_style))
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph(f"Cliente: {cliente['nombre']}", styles['Heading2']))
+        elements.append(Spacer(1, 5))
+        
+        # Información del cliente
+        info = f"""
+        <b>Teléfono:</b> {cliente.get('telefono', 'No registrado')}<br/>
+        <b>Dirección:</b> {cliente.get('direccion', 'No registrada')}<br/>
+        <b>Total adeudado:</b> Bs {sum(c['saldo'] for c in creditos if c['estado'] == 'PENDIENTE'):,.2f}<br/>
+        <b>Total créditos:</b> {len(creditos)}<br/>
+        """
+        elements.append(Paragraph(info, styles['Normal']))
+        elements.append(Spacer(1, 20))
+        
+        if creditos:
+            # Tabla de créditos
+            data = [['ID', 'Fecha', 'Total Bs', 'Pagado Bs', 'Saldo', 'Estado']]
+            for credito in creditos:
+                estado_color = 'green' if credito['estado'] == 'PAGADO' else 'red'
+                estado_text = f'<font color="{estado_color}">{credito["estado"]}</font>'
+                data.append([
+                    str(credito['id']),
+                    credito['fecha_venta'].strftime('%d/%m/%Y') if credito['fecha_venta'] else '-',
+                    f"{credito['total']:,.2f}",
+                    f"{credito['pagado']:,.2f}",
+                    f"{credito['saldo']:,.2f}",
+                    estado_text
+                ])
+            
+            table = Table(data, colWidths=[40, 80, 90, 90, 90, 80])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            elements.append(table)
+        else:
+            elements.append(Paragraph("No hay créditos registrados para este cliente", styles['Normal']))
+        
+        # Construir PDF
+        doc.build(elements)
+        buffer.seek(0)
+        
+        return send_file(
+            buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"creditos_{cliente['nombre']}.pdf"
+        )
+        
+    except Exception as e:
+        print(f"Error generando PDF de créditos: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 # ========== INICIAR SERVIDOR ==========
 #if __name__ == '__main__':
 #    port = int(os.environ.get("PORT", 5000))
