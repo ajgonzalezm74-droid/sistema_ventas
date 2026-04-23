@@ -561,6 +561,137 @@ def api_actualizar_fecha_historica(id_venta):
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
+@app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
+def api_reporte_cliente_pdf(cliente_id):
+    """Genera PDF con el reporte de créditos de un cliente específico"""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        import io
+        from datetime import datetime
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener datos del cliente
+        cursor.execute("""
+            SELECT id, nombre, telefono, direccion 
+            FROM clientes 
+            WHERE id = %s
+        """, (cliente_id,))
+        cliente = cursor.fetchone()
+        
+        if not cliente:
+            conn.close()
+            return jsonify({'error': 'Cliente no encontrado'}), 404
+        
+        # Obtener créditos del cliente
+        cursor.execute("""
+            SELECT 
+                v.id, 
+                v.fecha_venta, 
+                v.total, 
+                COALESCE(v.monto_pagado, 0) as monto_pagado,
+                (v.total - COALESCE(v.monto_pagado, 0)) as saldo,
+                CASE 
+                    WHEN COALESCE(v.monto_pagado, 0) >= v.total THEN 'PAGADO'
+                    ELSE 'PENDIENTE'
+                END as estado
+            FROM ventas v
+            WHERE v.id_cliente = %s AND v.credito = true
+            ORDER BY v.fecha_venta DESC
+        """, (cliente_id,))
+        
+        creditos = cursor.fetchall()
+        conn.close()
+        
+        # Crear PDF
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = []
+        
+        # Título
+        titulo_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            textColor=colors.HexColor('#1976D2'),
+            alignment=1
+        )
+        elements.append(Paragraph("Reporte de Créditos", titulo_style))
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph(f"Cliente: {cliente[1]}", styles['Heading2']))
+        elements.append(Spacer(1, 5))
+        
+        # Información del cliente
+        total_adeudado = sum(float(c[4]) for c in creditos if c[5] == 'PENDIENTE')
+        info = f"""
+        <b>Teléfono:</b> {cliente[2] if cliente[2] else 'No registrado'}<br/>
+        <b>Total adeudado:</b> Bs {total_adeudado:,.2f}<br/>
+        <b>Total créditos:</b> {len(creditos)}<br/>
+        <b>Fecha reporte:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}
+        """
+        elements.append(Paragraph(info, styles['Normal']))
+        elements.append(Spacer(1, 20))
+        
+        if creditos:
+            # Tabla de créditos
+            data = [['ID', 'Fecha', 'Total Bs', 'Pagado Bs', 'Saldo', 'Estado']]
+            for credito in creditos:
+                estado_color = 'green' if credito[5] == 'PAGADO' else 'red'
+                estado_text = f'<font color="{estado_color}">{credito[5]}</font>'
+                
+                # Manejar fecha
+                fecha_venta = credito[1]
+                fecha_str = fecha_venta.strftime('%d/%m/%Y') if fecha_venta and hasattr(fecha_venta, 'strftime') else str(fecha_venta)[:10] if fecha_venta else '-'
+                
+                data.append([
+                    str(credito[0]),
+                    fecha_str,
+                    f"{float(credito[2]):,.2f}",
+                    f"{float(credito[3]):,.2f}",
+                    f"{float(credito[4]):,.2f}",
+                    estado_text
+                ])
+            
+            # Configurar tabla
+            table = Table(data, colWidths=[40, 80, 90, 90, 90, 80])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            elements.append(table)
+        else:
+            elements.append(Paragraph("No hay créditos registrados para este cliente", styles['Normal']))
+        
+        # Construir PDF
+        doc.build(elements)
+        buffer.seek(0)
+        
+        return send_file(
+            buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"creditos_{cliente[1].replace(' ', '_')}.pdf"
+        )
+        
+    except Exception as e:
+        print(f"Error generando PDF: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 
 # ========== FUNCIÓN PARA RECIBO DE CANCELACIÓN GLOBAL ==========
 def generar_recibo_cancelacion_global(datos_cliente, lista_deudas, tasa_actual):
