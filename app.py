@@ -273,11 +273,13 @@ def get_creditos_agrupados():
 
 @app.route('/api/creditos/retraso', methods=['GET'])
 def api_creditos_retraso():
+    """Obtiene créditos con retraso (vencidos) - Versión PostgreSQL"""
     try:
-        return jsonify(ventas_con_retraso())
+        creditos_retraso = ventas_con_retraso()
+        return jsonify(creditos_retraso)
     except Exception as e:
+        print(f"❌ Error en créditos con retraso: {str(e)}")
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/creditos/pagar', methods=['POST'])
 def api_pagar_credito():
@@ -1072,15 +1074,7 @@ def api_reporte_creditos():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/creditos/retraso', methods=['GET'])
-def api_creditos_retraso():
-    """Obtiene créditos con retraso (vencidos) - Versión PostgreSQL"""
-    try:
-        creditos_retraso = ventas_con_retraso()
-        return jsonify(creditos_retraso)
-    except Exception as e:
-        print(f"❌ Error en créditos con retraso: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+
 
 # ========== INICIAR SERVIDOR ==========
 #if __name__ == '__main__':
