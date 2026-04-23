@@ -564,422 +564,143 @@ def api_actualizar_fecha_historica(id_venta):
 
 
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
-@app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
-def api_reporte_cliente_pdf(cliente_id):
-    """Genera reporte de créditos en HTML con diseño profesional"""
-    try:
-        from datetime import datetime
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener cliente
-        cursor.execute("SELECT id, nombre, telefono FROM clientes WHERE id = %s", (cliente_id,))
-        cliente = cursor.fetchone()
-        
-        if not cliente:
-            conn.close()
-            return jsonify({'error': 'Cliente no encontrado'}), 404
-        
-        # Obtener créditos NO pagados completamente
-        cursor.execute("""
-            SELECT v.id, v.fecha_venta, v.total, v.tasa, v.saldo_pendiente
-            FROM ventas v
-            WHERE v.id_cliente = %s 
-                AND v.credito = true 
-                AND v.pagado = false
-            ORDER BY v.fecha_venta DESC
-        """, (cliente_id,))
-        
-        creditos = cursor.fetchall()
-        
-        # Obtener tasa actual
-        tasa_response = obtener_tasa_actual()
-        tasa_actual = tasa_response.get('bcv_usd', 55.0)
-        
-        # Procesar deudas
-        deudas = []
-        total_global = 0
-        
-        for credito in creditos:
-            id_venta, fecha_venta, total, tasa_venta, saldo_pendiente_db = credito
-            
-            total = float(total) if total else 0
-            tasa_venta = float(tasa_venta) if tasa_venta else 55.0
-            saldo_pendiente_db = float(saldo_pendiente_db) if saldo_pendiente_db else total
-            
-            # Obtener total pagado de la tabla pagos_credito
-            cursor.execute("""
-                SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado
-                FROM pagos_credito
-                WHERE id_venta = %s
-            """, (id_venta,))
-            total_pagado = float(cursor.fetchone()[0] or 0)
-            
-            # Calcular saldo real
-            # Opción 1: Usar saldo_pendiente de la BD
-            saldo_real = saldo_pendiente_db
-            
-            # Opción 2: Calcular manualmente (respaldo)
-            if saldo_real <= 0 and total_pagado > 0:
-                saldo_real = total - total_pagado
-            
-            if saldo_real < 0:
-                saldo_real = 0
-            
-            if saldo_real <= 0.01:
-                continue  # Saltar créditos pagados
-            
-            total_global += saldo_real
-            
-            # Obtener productos
-            cursor.execute("""
-                SELECT p.descripcion, dv.cantidad
-                FROM detalles_venta dv
-                JOIN productos p ON dv.id_producto = p.id
-                WHERE dv.id_venta = %s
-            """, (id_venta,))
-            productos = cursor.fetchall()
-            
-            fecha_str = fecha_venta.strftime('%d/%m/%Y') if fecha_venta else '-'
-            
-            # Calcular valores para mostrar
-            total_usd = total / tasa_venta if tasa_venta > 0 else 0
-            total_actualizado = total_usd * tasa_actual
-            
-            deudas.append({
-                'id': id_venta,
-                'fecha': fecha_str,
-                'total_original': total,
-                'tasa_venta': tasa_venta,
-                'total_usd': total_usd,
-                'total_actualizado': total_actualizado,
-                'saldo': saldo_real,
-                'pagado': total_pagado,
-                'productos': [{'descripcion': p[0], 'cantidad': p[1]} for p in productos]
-            })
-        
-        conn.close()
-        
-        # Generar HTML profesional
-        html = f"""
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Reporte de Créditos - {cliente[1]}</title>
-            <style>
-                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                body {{
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: #e8ecef;
-                    padding: 40px 20px;
-                }}
-                .container {{
-                    max-width: 900px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 12px;
-                    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                }}
-                .header {{
-                    background: linear-gradient(135deg, #1e5799 0%, #2b88c4 100%);
-                    color: white;
-                    padding: 30px;
-                    text-align: center;
-                }}
-                .header h1 {{
-                    font-size: 28px;
-                    margin-bottom: 8px;
-                }}
-                .cliente-info {{
-                    background: #f5f7fa;
-                    padding: 20px 30px;
-                    border-bottom: 1px solid #ddd;
-                }}
-                .cliente-info h3 {{
-                    color: #1e5799;
-                    margin-bottom: 12px;
-                }}
-                .info-grid {{
-                    display: flex;
-                    gap: 40px;
-                    flex-wrap: wrap;
-                }}
-                .info-item {{
-                    font-size: 14px;
-                }}
-                .info-item strong {{
-                    color: #555;
-                    display: inline-block;
-                    width: 70px;
-                }}
-                .deuda-card {{
-                    border: 1px solid #e0e0e0;
-                    border-radius: 8px;
-                    margin: 20px 30px;
-                    overflow: hidden;
-                }}
-                .deuda-header {{
-                    background: #f9f9f9;
-                    padding: 12px 20px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    border-bottom: 1px solid #eee;
-                }}
-                .deuda-fecha {{
-                    font-weight: bold;
-                    color: #1e5799;
-                    font-size: 16px;
-                }}
-                .deuda-saldo {{
-                    font-weight: bold;
-                    color: #e74c3c;
-                    font-size: 18px;
-                }}
-                .deuda-detalle {{
-                    padding: 20px;
-                    background: white;
-                }}
-                .info-row {{
-                    display: flex;
-                    flex-wrap: wrap;
-                    margin-bottom: 12px;
-                    padding: 8px;
-                    border-bottom: 1px dashed #eee;
-                }}
-                .info-label {{
-                    width: 160px;
-                    font-weight: bold;
-                    color: #555;
-                }}
-                .info-value {{
-                    flex: 1;
-                    color: #333;
-                }}
-                .productos-list {{
-                    background: #f8f9fa;
-                    padding: 12px;
-                    border-radius: 6px;
-                    margin-top: 10px;
-                }}
-                .producto-item {{
-                    display: inline-block;
-                    background: #e9ecef;
-                    padding: 4px 10px;
-                    margin: 4px;
-                    border-radius: 15px;
-                    font-size: 12px;
-                }}
-                .total-global {{
-                    background: #2c3e50;
-                    color: white;
-                    padding: 20px 30px;
-                    text-align: right;
-                    margin-top: 20px;
-                }}
-                .total-global h2 {{
-                    font-size: 22px;
-                    color: #27ae60;
-                }}
-                .footer {{
-                    background: #f5f7fa;
-                    padding: 15px;
-                    text-align: center;
-                    font-size: 11px;
-                    color: #888;
-                }}
-                .btn-print {{
-                    position: fixed;
-                    bottom: 30px;
-                    right: 30px;
-                    background: #1e5799;
-                    color: white;
-                    border: none;
-                    padding: 12px 24px;
-                    border-radius: 40px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    font-weight: bold;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                    z-index: 1000;
-                }}
-                .btn-print:hover {{
-                    background: #0d3d6b;
-                }}
-                .badge {{
-                    display: inline-block;
-                    padding: 4px 10px;
-                    border-radius: 20px;
-                    font-size: 11px;
-                    font-weight: bold;
-                    margin-left: 10px;
-                }}
-                .badge-pendiente {{
-                    background: #e74c3c;
-                    color: white;
-                }}
-                @media print {{
-                    body {{ background: white; padding: 0; }}
-                    .btn-print {{ display: none; }}
-                    .deuda-header {{ break-inside: avoid; }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>📄 VENTAS PRO</h1>
-                    <p>Estado de Cuenta - Créditos Pendientes</p>
-                </div>
-                
-                <div class="cliente-info">
-                    <h3>👤 Información del Cliente</h3>
-                    <div class="info-grid">
-                        <div class="info-item"><strong>Nombre:</strong> {cliente[1]}</div>
-                        <div class="info-item"><strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}</div>
-                        <div class="info-item"><strong>Fecha reporte:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
-                        <div class="info-item"><strong>Tasa BCV:</strong> Bs {tasa_actual:,.2f}</div>
-                    </div>
-                </div>
-        """
-        
-        if deudas:
-            for deuda in deudas:
-                html += f"""
-                <div class="deuda-card">
-                    <div class="deuda-header">
-                        <div>
-                            <span class="deuda-fecha">📅 {deuda['fecha']}</span>
-                            <span class="badge badge-pendiente">PENDIENTE</span>
-                        </div>
-                        <div class="deuda-saldo">Bs {deuda['saldo']:,.2f}</div>
-                    </div>
-                    <div class="deuda-detalle">
-                        <div class="info-row">
-                            <div class="info-label">💰 Deuda original:</div>
-                            <div class="info-value">Bs {deuda['total_original']:,.2f}</div>
-                        </div>
-                        <div class="info-row">
-                            <div class="info-label">📈 Tasa al vender:</div>
-                            <div class="info-value">Bs {deuda['tasa_venta']:,.2f}</div>
-                        </div>
-                        <div class="info-row">
-                            <div class="info-label">💵 Total en USD:</div>
-                            <div class="info-value">${deuda['total_usd']:,.2f}</div>
-                        </div>
-                        <div class="info-row">
-                            <div class="info-label">💵 Al pagar HOY:</div>
-                            <div class="info-value">Bs {deuda['total_actualizado']:,.2f}</div>
-                        </div>
-                        <div class="info-row">
-                            <div class="info-label">✅ Pagado hasta hoy:</div>
-                            <div class="info-value">Bs {deuda['pagado']:,.2f}</div>
-                        </div>
-                        <div class="info-row">
-                            <div class="info-label">⚠️ SALDO PENDIENTE:</div>
-                            <div class="info-value" style="color:#e74c3c; font-weight:bold;">Bs {deuda['saldo']:,.2f}</div>
-                        </div>
-                        <div class="productos-list">
-                            <strong>📦 Productos:</strong><br>
-                """
-                for prod in deuda['productos']:
-                    html += f'<span class="producto-item">{prod["descripcion"]} x{prod["cantidad"]}</span>'
-                html += """
-                        </div>
-                    </div>
-                </div>
-                """
-        else:
-            html += """
-                <div style="text-align: center; padding: 60px; color: #27ae60;">
-                    <h3>✨ ¡No hay deudas pendientes!</h3>
-                    <p>Este cliente tiene todos sus créditos al día.</p>
-                </div>
-            """
-        
-        html += f"""
-                <div class="total-global">
-                    <h2>💰 TOTAL GENERAL ADEUDADO: Bs {total_global:,.2f}</h2>
-                    <p>Monto total pendiente por cobrar</p>
-                </div>
-                
-                <div class="footer">
-                    <p>Reporte generado automáticamente por Ventas Pro | {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
-                </div>
-            </div>
-            
-            <button class="btn-print" onclick="window.print()">
-                🖨️ Imprimir / Guardar PDF
-            </button>
-        </body>
-        </html>
-        """
-        
-        return html, 200, {'Content-Type': 'text/html'}
-        
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-    """HTML de respaldo si la generación de imagen falla"""
-    from datetime import datetime
-    
-    filas = ""
-    for d in deudas:
-        filas += f"""
-        <div style="border:1px solid #ddd; margin:10px 0; padding:10px; border-radius:5px;">
-            <strong>Fecha:</strong> {d['fecha']}<br>
-            <strong>Total original:</strong> Bs {d['total_original']:,.2f}<br>
-            <strong>Al pagar hoy:</strong> Bs {d['total_actualizado']:,.2f}<br>
-            <strong>Pagado:</strong> Bs {d['total_pagado']:,.2f}<br>
-            <strong style="color:red;">Saldo:</strong> Bs {d['saldo_pendiente']:,.2f}<br>
-            <strong>Productos:</strong> {', '.join([p['descripcion'] for p in d['productos']])}
-        </div>
-        """
-    
-    return f"""
+def generar_html_reporte(cliente, deudas, tasa_actual, total_global, fecha_actual):
+    """Genera el HTML del reporte"""
+    html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
         <title>Reporte de Créditos - {cliente[1]}</title>
         <style>
-            body {{ font-family: Arial; margin: 20px; }}
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
             .header {{ background: #1976D2; color: white; padding: 20px; text-align: center; }}
             .info {{ background: #f5f5f5; padding: 15px; margin: 20px 0; border-radius: 5px; }}
+            .deuda {{ border: 1px solid #ddd; margin: 15px 0; padding: 15px; border-radius: 5px; }}
+            .saldo {{ color: red; font-weight: bold; font-size: 18px; }}
             .total {{ background: #4CAF50; color: white; padding: 15px; text-align: right; font-size: 18px; margin-top: 20px; }}
             button {{ padding: 10px 20px; margin: 10px; cursor: pointer; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background: #1976D2; color: white; }}
         </style>
     </head>
     <body>
         <div class="header">
             <h1>📄 VENTAS PRO</h1>
-            <p>Reporte Global de Créditos</p>
+            <p>Estado de Cuenta - Créditos Pendientes</p>
         </div>
+        
         <div class="info">
             <strong>Cliente:</strong> {cliente[1]}<br>
-            <strong>Teléfono:</strong> {cliente[2] or 'No registrado'}<br>
-            <strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}<br>
-            <strong>Tasa BCV actual:</strong> Bs {tasa_actual:.2f}
+            <strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}<br>
+            <strong>Fecha reporte:</strong> {fecha_actual.strftime('%d/%m/%Y %H:%M')}<br>
+            <strong>Tasa BCV actual:</strong> Bs {tasa_actual:,.2f}
         </div>
-        {filas}
+    """
+    
+    for deuda in deudas:
+        productos_str = ", ".join([f"{p['descripcion']} x{p['cantidad']}" for p in deuda['productos']])
+        html += f"""
+        <div class="deuda">
+            <h3>📅 Venta del {deuda['fecha']}</h3>
+            <table>
+                <tr><th>Descripción</th><th>Monto</th></tr>
+                <tr><td>💰 Deuda original</td><td>Bs {deuda['total_original']:,.2f}</td></tr>
+                <tr><td>📈 Tasa al vender</td><td>Bs {deuda['tasa_venta']:,.2f}</td></tr>
+                <tr><td>💵 Total en USD</td><td>${deuda['total_usd']:,.2f}</td></tr>
+                <tr><td>💵 Al pagar HOY</td><td>Bs {deuda['total_actualizado']:,.2f}</td></tr>
+                <tr><td>✅ Pagado hasta hoy</td><td>Bs {deuda['pagado']:,.2f}</td></tr>
+                <tr><td class="saldo">⚠️ SALDO PENDIENTE</td>
+                <td> class="saldo">Bs {deuda['saldo']:,.2f}</td></tr>
+            </table>
+            <p><strong>📦 Productos:</strong> {productos_str}</p>
+        </div>
+        """
+    
+    html += f"""
         <div class="total">
-            💰 TOTAL ADEUDADO: Bs {total_general:,.2f}
+            💰 TOTAL GENERAL ADEUDADO: Bs {total_global:,.2f}
         </div>
-        <div style="text-align:center;">
+        
+        <div style="text-align:center; margin-top:20px;">
             <button onclick="window.print()">🖨️ Imprimir</button>
             <button onclick="window.close()">❌ Cerrar</button>
         </div>
     </body>
     </html>
     """
+    
+    return html
+def generar_html_reporte(cliente, deudas, tasa_actual, total_global, fecha_actual):
+    """Genera el HTML del reporte"""
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Reporte de Créditos - {cliente[1]}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            .header {{ background: #1976D2; color: white; padding: 20px; text-align: center; }}
+            .info {{ background: #f5f5f5; padding: 15px; margin: 20px 0; border-radius: 5px; }}
+            .deuda {{ border: 1px solid #ddd; margin: 15px 0; padding: 15px; border-radius: 5px; }}
+            .saldo {{ color: red; font-weight: bold; font-size: 18px; }}
+            .total {{ background: #4CAF50; color: white; padding: 15px; text-align: right; font-size: 18px; margin-top: 20px; }}
+            button {{ padding: 10px 20px; margin: 10px; cursor: pointer; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background: #1976D2; color: white; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>📄 VENTAS PRO</h1>
+            <p>Estado de Cuenta - Créditos Pendientes</p>
+        </div>
+        
+        <div class="info">
+            <strong>Cliente:</strong> {cliente[1]}<br>
+            <strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}<br>
+            <strong>Fecha reporte:</strong> {fecha_actual.strftime('%d/%m/%Y %H:%M')}<br>
+            <strong>Tasa BCV actual:</strong> Bs {tasa_actual:,.2f}
+        </div>
+    """
+    
+    for deuda in deudas:
+        productos_str = ", ".join([f"{p['descripcion']} x{p['cantidad']}" for p in deuda['productos']])
+        html += f"""
+        <div class="deuda">
+            <h3>📅 Venta del {deuda['fecha']}</h3>
+            <table>
+                <tr><th>Descripción</th><th>Monto</th></tr>
+                <tr><td>💰 Deuda original</td><td>Bs {deuda['total_original']:,.2f}</td></tr>
+                <tr><td>📈 Tasa al vender</td><td>Bs {deuda['tasa_venta']:,.2f}</td></tr>
+                <tr><td>💵 Total en USD</td><td>${deuda['total_usd']:,.2f}</td></tr>
+                <tr><td>💵 Al pagar HOY</td><td>Bs {deuda['total_actualizado']:,.2f}</td></tr>
+                <tr><td>✅ Pagado hasta hoy</td><td>Bs {deuda['pagado']:,.2f}</td></tr>
+                <tr><td class="saldo">⚠️ SALDO PENDIENTE</td>
+                <td> class="saldo">Bs {deuda['saldo']:,.2f}</td></tr>
+            </table>
+            <p><strong>📦 Productos:</strong> {productos_str}</p>
+        </div>
+        """
+    
+    html += f"""
+        <div class="total">
+            💰 TOTAL GENERAL ADEUDADO: Bs {total_global:,.2f}
+        </div>
+        
+        <div style="text-align:center; margin-top:20px;">
+            <button onclick="window.print()">🖨️ Imprimir</button>
+            <button onclick="window.close()">❌ Cerrar</button>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return html
+
 
 # ========== FUNCIÓN PARA RECIBO DE CANCELACIÓN GLOBAL ==========
 def generar_recibo_cancelacion_global(datos_cliente, lista_deudas, tasa_actual):
