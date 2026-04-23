@@ -571,7 +571,7 @@ def api_reporte_cliente_pdf(cliente_id):
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Obtener datos del cliente (solo columnas que existen)
+        # Obtener datos del cliente
         cursor.execute("""
             SELECT id, nombre, telefono 
             FROM clientes 
@@ -583,26 +583,48 @@ def api_reporte_cliente_pdf(cliente_id):
             conn.close()
             return jsonify({'error': 'Cliente no encontrado'}), 404
         
-        # Obtener créditos del cliente
+        # Obtener créditos del cliente (usando columnas reales)
         cursor.execute("""
             SELECT 
                 v.id, 
                 v.fecha_venta, 
-                v.total, 
-                COALESCE(v.monto_pagado, 0) as monto_pagado,
-                (v.total - COALESCE(v.monto_pagado, 0)) as saldo
+                v.total,
+                COALESCE(v.saldo_pendiente, v.total) as saldo_pendiente,
+                v.credito,
+                v.pagado,
+                v.fecha_pago
             FROM ventas v
-            WHERE v.id_cliente = %s AND v.credito = true
+            WHERE v.id_cliente = %s 
+                AND v.credito = true
+                AND (v.pagado = false OR v.pagado IS NULL)
             ORDER BY v.fecha_venta DESC
         """, (cliente_id,))
         
         creditos = cursor.fetchall()
         conn.close()
         
-        # Calcular total adeudado
-        total_adeudado = sum(float(c[4]) for c in creditos)
+        # Calcular totales
+        total_adeudado = 0
+        creditos_procesados = []
         
-        # Generar HTML del reporte
+        for credito in creditos:
+            id_venta = credito[0]
+            fecha_venta = credito[1]
+            total = float(credito[2]) if credito[2] else 0
+            saldo = float(credito[3]) if credito[3] else total
+            pagado = total - saldo
+            
+            total_adeudado += saldo
+            
+            creditos_procesados.append({
+                'id': id_venta,
+                'fecha': fecha_venta,
+                'total': total,
+                'pagado': pagado,
+                'saldo': saldo
+            })
+        
+        # Generar HTML
         html = f"""
         <!DOCTYPE html>
         <html lang="es">
@@ -689,6 +711,9 @@ def api_reporte_cliente_pdf(cliente_id):
                 .saldo {{
                     font-weight: bold;
                     color: #e74c3c;
+                }}
+                .pagado {{
+                    color: #27ae60;
                 }}
                 .total-box {{
                     background: #e8f5e9;
@@ -793,10 +818,10 @@ def api_reporte_cliente_pdf(cliente_id):
                     <tbody>
         """
         
-        if creditos and len(creditos) > 0:
-            for credito in creditos:
-                # Manejar fecha correctamente
-                fecha_venta = credito[1]
+        if creditos_procesados:
+            for credito in creditos_procesados:
+                # Manejar fecha
+                fecha_venta = credito['fecha']
                 if fecha_venta and hasattr(fecha_venta, 'strftime'):
                     fecha_str = fecha_venta.strftime('%d/%m/%Y')
                 else:
@@ -804,11 +829,11 @@ def api_reporte_cliente_pdf(cliente_id):
                 
                 html += f"""
                         <tr>
-                            <td>{credito[0]}</td>
+                            <td>{credito['id']}</td>
                             <td>{fecha_str}</td>
-                            <td>Bs {float(credito[2]):,.2f}</td>
-                            <td>Bs {float(credito[3]):,.2f}</td>
-                            <td class="saldo">Bs {float(credito[4]):,.2f}</td>
+                            <td>Bs {credito['total']:,.2f}</td>
+                            <td class="pagado">Bs {credito['pagado']:,.2f}</td>
+                            <td class="saldo">Bs {credito['saldo']:,.2f}</td>
                         </tr>
                 """
         else:
@@ -829,7 +854,7 @@ def api_reporte_cliente_pdf(cliente_id):
                 
                 <div class="footer">
                     <p>Reporte generado automáticamente por Ventas Pro • {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
-                    <p style="margin-top: 5px;">© 2024 Ventas Pro - Todos los derechos reservados</p>
+                    <p style="margin-top: 5px;">© 2025 Ventas Pro - Todos los derechos reservados</p>
                 </div>
             </div>
             
@@ -846,273 +871,7 @@ def api_reporte_cliente_pdf(cliente_id):
         print(f"❌ Error generando reporte: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500 
-    try:
-        from datetime import datetime
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Obtener datos del cliente (sin 'direccion')
-        cursor.execute("""
-            SELECT id, nombre, telefono 
-            FROM clientes 
-            WHERE id = %s
-        """, (cliente_id,))
-        cliente = cursor.fetchone()
-        
-        if not cliente:
-            conn.close()
-            return jsonify({'error': 'Cliente no encontrado'}), 404
-        
-        # Obtener créditos
-        cursor.execute("""
-            SELECT 
-                v.id, 
-                v.fecha_venta, 
-                v.total, 
-                COALESCE(v.monto_pagado, 0) as monto_pagado,
-                (v.total - COALESCE(v.monto_pagado, 0)) as saldo
-            FROM ventas v
-            WHERE v.id_cliente = %s AND v.credito = true
-            ORDER BY v.fecha_venta DESC
-        """, (cliente_id,))
-        
-        creditos = cursor.fetchall()
-        conn.close()
-        
-        # Calcular totales
-        total_adeudado = sum(float(c[4]) for c in creditos)
-        
-        # Generar HTML
-        html = f"""
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Reporte de Créditos - {cliente[1]}</title>
-            <style>
-                * {{
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }}
-                body {{
-                    font-family: 'Segoe UI', Arial, sans-serif;
-                    background: #f0f2f5;
-                    padding: 20px;
-                }}
-                .reporte {{
-                    max-width: 1000px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 12px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    overflow: hidden;
-                }}
-                .header {{
-                    background: linear-gradient(135deg, #1976D2, #1565C0);
-                    color: white;
-                    padding: 30px;
-                    text-align: center;
-                }}
-                .header h1 {{
-                    font-size: 28px;
-                    margin-bottom: 5px;
-                }}
-                .header p {{
-                    opacity: 0.9;
-                    font-size: 14px;
-                }}
-                .info-cliente {{
-                    padding: 20px 30px;
-                    background: #f8f9fa;
-                    border-bottom: 1px solid #e0e0e0;
-                }}
-                .info-cliente h3 {{
-                    color: #1976D2;
-                    margin-bottom: 10px;
-                }}
-                .info-grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 10px;
-                }}
-                .info-item {{
-                    font-size: 14px;
-                }}
-                .info-item strong {{
-                    color: #555;
-                }}
-                table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                }}
-                th, td {{
-                    padding: 12px;
-                    text-align: left;
-                    border-bottom: 1px solid #e0e0e0;
-                }}
-                th {{
-                    background: #f8f9fa;
-                    color: #1976D2;
-                    font-weight: 600;
-                    font-size: 14px;
-                }}
-                td {{
-                    font-size: 14px;
-                }}
-                .saldo {{
-                    font-weight: bold;
-                    color: #e74c3c;
-                }}
-                .total-box {{
-                    background: #e8f5e9;
-                    padding: 20px 30px;
-                    text-align: right;
-                    border-top: 2px solid #4caf50;
-                }}
-                .total-box h2 {{
-                    color: #2e7d32;
-                    font-size: 24px;
-                }}
-                .total-box p {{
-                    color: #666;
-                    font-size: 12px;
-                    margin-top: 5px;
-                }}
-                .footer {{
-                    background: #f8f9fa;
-                    padding: 15px;
-                    text-align: center;
-                    font-size: 12px;
-                    color: #999;
-                    border-top: 1px solid #e0e0e0;
-                }}
-                .btn-print {{
-                    position: fixed;
-                    bottom: 20px;
-                    right: 20px;
-                    background: #1976D2;
-                    color: white;
-                    border: none;
-                    padding: 12px 24px;
-                    border-radius: 8px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    font-weight: bold;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                    transition: all 0.3s;
-                    z-index: 1000;
-                }}
-                .btn-print:hover {{
-                    background: #1565C0;
-                    transform: scale(1.05);
-                }}
-                @media print {{
-                    body {{
-                        background: white;
-                        padding: 0;
-                    }}
-                    .btn-print {{
-                        display: none;
-                    }}
-                    .header {{
-                        background: #1976D2;
-                        -webkit-print-color-adjust: exact;
-                        print-color-adjust: exact;
-                    }}
-                    th {{
-                        background: #f8f9fa;
-                        -webkit-print-color-adjust: exact;
-                        print-color-adjust: exact;
-                    }}
-                    .total-box {{
-                        background: #e8f5e9;
-                        -webkit-print-color-adjust: exact;
-                        print-color-adjust: exact;
-                    }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="reporte">
-                <div class="header">
-                    <h1>📄 VENTAS PRO</h1>
-                    <p>Reporte de Créditos</p>
-                </div>
-                
-                <div class="info-cliente">
-                    <h3>👤 Información del Cliente</h3>
-                    <div class="info-grid">
-                        <div class="info-item"><strong>Nombre:</strong> {cliente[1]}</div>
-                        <div class="info-item"><strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}</div>
-                        <div class="info-item"><strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
-                    </div>
-                </div>
-                
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Fecha Venta</th>
-                            <th>Total Bs</th>
-                            <th>Pagado Bs</th>
-                            <th>Saldo Pendiente</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        """
-        
-        if creditos:
-            for credito in creditos:
-                fecha_str = credito[1].strftime('%d/%m/%Y') if credito[1] and hasattr(credito[1], 'strftime') else str(credito[1])[:10] if credito[1] else '-'
-                html += f"""
-                        <tr>
-                            <td>{credito[0]}</td>
-                            <td>{fecha_str}</td>
-                            <td>Bs {float(credito[2]):,.2f}</td>
-                            <td>Bs {float(credito[3]):,.2f}</td>
-                            <td class="saldo">Bs {float(credito[4]):,.2f}</td>
-                        </tr>
-                """
-        else:
-            html += """
-                        <tr>
-                            <td colspan="5" style="text-align: center;">No hay créditos registrados para este cliente</td>
-                        </tr>
-            """
-        
-        html += f"""
-                    </tbody>
-                </table>
-                
-                <div class="total-box">
-                    <h2>Total Adeudado: Bs {total_adeudado:,.2f}</h2>
-                    <p>Monto total pendiente por cobrar</p>
-                </div>
-                
-                <div class="footer">
-                    <p>Reporte generado automáticamente por Ventas Pro • {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>
-                </div>
-            </div>
-            
-            <button class="btn-print" onclick="window.print()">
-                🖨️ Imprimir / Guardar PDF
-            </button>
-        </body>
-        </html>
-        """
-        
-        return html, 200, {'Content-Type': 'text/html'}
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
 
 # ========== FUNCIÓN PARA RECIBO DE CANCELACIÓN GLOBAL ==========
 def generar_recibo_cancelacion_global(datos_cliente, lista_deudas, tasa_actual):
