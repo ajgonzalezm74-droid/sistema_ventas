@@ -1,4 +1,3 @@
-te paso el exchange provider no esta refrescando la tasa ya que le dije qu se guardara en tabla solo si cambia el monto
 import requests
 import psycopg2
 from datetime import datetime
