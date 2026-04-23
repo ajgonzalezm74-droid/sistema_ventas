@@ -564,7 +564,7 @@ def api_actualizar_fecha_historica(id_venta):
 
 
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
-k@app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
+@app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
 def api_reporte_cliente_pdf(cliente_id):
     """Genera reporte de créditos en HTML con diseño profesional"""
     try:
