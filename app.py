@@ -564,6 +564,182 @@ def api_actualizar_fecha_historica(id_venta):
 
 
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
+@app.route('/api/creditos/reporte_cliente_pdf/<int:cliente_id>', methods=['GET'])
+def api_reporte_cliente_pdf(cliente_id):
+    """Genera reporte de créditos en HTML con diseño profesional"""
+    try:
+        from datetime import datetime
+        
+        print(f"\n🔵 ===== REPORTE CRÉDITOS CLIENTE {cliente_id} =====")
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener cliente
+        cursor.execute("SELECT id, nombre, telefono FROM clientes WHERE id = %s", (cliente_id,))
+        cliente = cursor.fetchone()
+        
+        if not cliente:
+            conn.close()
+            return jsonify({'error': 'Cliente no encontrado'}), 404
+        
+        print(f"✅ Cliente: {cliente[1]}")
+        
+        # Obtener TODAS las ventas a crédito
+        cursor.execute("""
+            SELECT v.id, v.fecha_venta, v.total, v.tasa
+            FROM ventas v
+            WHERE v.id_cliente = %s AND v.credito = true
+            ORDER BY v.fecha_venta DESC
+        """, (cliente_id,))
+        
+        creditos = cursor.fetchall()
+        print(f"💰 Créditos encontrados: {len(creditos)}")
+        
+        if not creditos:
+            conn.close()
+            return f"""
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"><title>Sin Créditos</title></head>
+            <body style="font-family:Arial;text-align:center;padding:50px;">
+                <h1>📄 Reporte de Créditos</h1>
+                <h2>Cliente: {cliente[1]}</h2>
+                <p>⚠️ Este cliente no tiene créditos registrados</p>
+                <button onclick="window.print()">🖨️ Imprimir</button>
+                <button onclick="window.close()">❌ Cerrar</button>
+            </body>
+            </html>
+            """
+        
+        # Obtener tasa actual
+        tasa_response = obtener_tasa_actual()
+        tasa_actual = tasa_response.get('bcv_usd', 55.0)
+        
+        # Procesar deudas
+        deudas = []
+        total_global = 0
+        
+        for credito in creditos:
+            id_venta, fecha_venta, total, tasa_venta = credito
+            total = float(total) if total else 0
+            tasa_venta = float(tasa_venta) if tasa_venta else 55.0
+            
+            # Obtener pagos
+            cursor.execute("""
+                SELECT COALESCE(SUM(monto_pagado), 0) as pagado
+                FROM pagos_credito
+                WHERE id_venta = %s
+            """, (id_venta,))
+            pagado = float(cursor.fetchone()[0] or 0)
+            
+            # Calcular saldo
+            saldo = total - pagado
+            if saldo <= 0:
+                continue
+                
+            total_global += saldo
+            
+            # Obtener productos
+            cursor.execute("""
+                SELECT p.descripcion, dv.cantidad
+                FROM detalles_venta dv
+                JOIN productos p ON dv.id_producto = p.id
+                WHERE dv.id_venta = %s
+            """, (id_venta,))
+            productos = cursor.fetchall()
+            
+            fecha_str = fecha_venta.strftime('%d/%m/%Y') if fecha_venta else '-'
+            total_usd = total / tasa_venta if tasa_venta > 0 else 0
+            total_hoy = total_usd * tasa_actual
+            
+            deudas.append({
+                'id': id_venta,
+                'fecha': fecha_str,
+                'total': total,
+                'tasa_venta': tasa_venta,
+                'total_usd': total_usd,
+                'total_hoy': total_hoy,
+                'saldo': saldo,
+                'pagado': pagado,
+                'productos': [{'descripcion': p[0], 'cantidad': p[1]} for p in productos]
+            })
+        
+        conn.close()
+        
+        # Generar HTML
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Reporte de Créditos - {cliente[1]}</title>
+            <style>
+                body {{ font-family: Arial; margin: 20px; background: #f0f2f5; }}
+                .container {{ max-width: 800px; margin: 0 auto; background: white; border-radius: 10px; }}
+                .header {{ background: #1976D2; color: white; padding: 20px; text-align: center; }}
+                .info {{ background: #f8f9fa; padding: 15px; border-bottom: 1px solid #ddd; }}
+                .deuda {{ margin: 15px 20px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }}
+                .fecha {{ color: #1976D2; font-weight: bold; }}
+                .saldo {{ color: #e74c3c; font-weight: bold; font-size: 18px; text-align: right; }}
+                .total {{ background: #2c3e50; color: white; padding: 15px; text-align: right; }}
+                button {{ padding: 10px 20px; margin: 10px; cursor: pointer; background: #1976D2; color: white; border: none; border-radius: 5px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📄 VENTAS PRO</h1>
+                    <p>Estado de Cuenta - Créditos Pendientes</p>
+                </div>
+                <div class="info">
+                    <strong>Cliente:</strong> {cliente[1]}<br>
+                    <strong>Teléfono:</strong> {cliente[2] if cliente[2] else 'No registrado'}<br>
+                    <strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}<br>
+                    <strong>Tasa BCV:</strong> Bs {tasa_actual:,.2f}
+                </div>
+        """
+        
+        for deuda in deudas:
+            productos_str = ", ".join([f"{p['descripcion']} x{p['cantidad']}" for p in deuda['productos']])
+            html += f"""
+                <div class="deuda">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span class="fecha">📅 {deuda['fecha']}</span>
+                        <span class="saldo">Bs {deuda['saldo']:,.2f}</span>
+                    </div>
+                    <table style="width:100%; margin-top:10px;">
+                        <tr><td>💰 Deuda original:</td><td>Bs {deuda['total']:,.2f}</td></tr>
+                        <tr><td>✅ Pagado:</td><td>Bs {deuda['pagado']:,.2f}</td></tr>
+                        <tr><td>💵 Al pagar HOY:</td><td>Bs {deuda['total_hoy']:,.2f}</td></tr>
+                    </table>
+                    <div style="background:#f8f9fa; padding:8px; margin-top:10px;">
+                        📦 {productos_str}
+                    </div>
+                </div>
+            """
+        
+        html += f"""
+                <div class="total">
+                    💰 TOTAL GENERAL ADEUDADO: Bs {total_global:,.2f}
+                </div>
+                <div style="text-align:center; padding:20px;">
+                    <button onclick="window.print()">🖨️ Imprimir</button>
+                    <button onclick="window.close()">❌ Cerrar</button>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html, 200, {'Content-Type': 'text/html'}
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 def generar_html_reporte(cliente, deudas, tasa_actual, total_global, fecha_actual):
     """Genera el HTML del reporte"""
     html = f"""
@@ -632,7 +808,7 @@ def generar_html_reporte(cliente, deudas, tasa_actual, total_global, fecha_actua
     """
     
     return html
-def generar_html_reporte(cliente, deudas, tasa_actual, total_global, fecha_actual):
+
     """Genera el HTML del reporte"""
     html = f"""
     <!DOCTYPE html>
