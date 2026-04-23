@@ -347,34 +347,97 @@ def api_reporte_rango():
 @app.route('/api/ventas/recibo/<int:id_venta>', methods=['GET'])
 def api_generar_recibo(id_venta):
     try:
+        import traceback
+        print(f"🔵 Generando recibo para venta ID: {id_venta}")
+        
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT v.*, c.nombre, c.telefono FROM ventas v JOIN clientes c ON v.id_cliente = c.id WHERE v.id = %s", (id_venta,))
+        
+        # 1. Obtener datos de la venta
+        print("🔵 Consultando venta...")
+        cursor.execute("""
+            SELECT v.*, c.nombre, c.telefono 
+            FROM ventas v 
+            JOIN clientes c ON v.id_cliente = c.id 
+            WHERE v.id = %s
+        """, (id_venta,))
         datos = cursor.fetchone()
+        
         if not datos:
             conn.close()
+            print("❌ Venta no encontrada")
             return jsonify({'error': 'Venta no encontrada'}), 404
         
-        datos = dict(datos)
-        cursor.execute("SELECT p.descripcion, dv.cantidad, dv.precio_unitario FROM detalles_venta dv JOIN productos p ON dv.id_producto = p.id WHERE dv.id_venta = %s", (id_venta,))
+        print(f"✅ Venta encontrada: {datos.get('id')}")
+        
+        # 2. Obtener productos
+        print("🔵 Consultando productos...")
+        cursor.execute("""
+            SELECT p.descripcion, dv.cantidad, dv.precio_unitario 
+            FROM detalles_venta dv 
+            JOIN productos p ON dv.id_producto = p.id 
+            WHERE dv.id_venta = %s
+        """, (id_venta,))
         productos = cursor.fetchall()
         conn.close()
         
-        tasa_actual = obtener_tasa_actual().get("bcv_usd", datos.get('tasa', 0))
+        print(f"✅ Productos encontrados: {len(productos)}")
+        
+        # 3. Obtener tasa actual
+        print("🔵 Obteniendo tasa actual...")
+        tasa_response = obtener_tasa_actual()
+        tasa_actual = tasa_response.get("bcv_usd", 55.0)
+        print(f"✅ Tasa actual: {tasa_actual}")
+        
+        # 4. Preparar datos del recibo
+        print("🔵 Preparando datos del recibo...")
+        
+        # Manejar fecha
+        fecha_venta = datos.get('fecha_venta')
+        if fecha_venta:
+            if hasattr(fecha_venta, 'strftime'):
+                fecha_str = fecha_venta.strftime('%d/%m/%Y')
+            else:
+                fecha_str = str(fecha_venta)[:10]
+        else:
+            fecha_str = ''
+        
         datos_recibo = {
             'cliente': datos.get('nombre', 'Cliente'),
-            'fecha': datos.get('fecha_venta', '')[:10],
-            'productos': [{'descripcion': p['descripcion'], 'cantidad': p['cantidad']} for p in productos],
-            'total': datos.get('total', 0),
-            'tasa': datos.get('tasa', 0),
+            'telefono': datos.get('telefono', ''),
+            'fecha': fecha_str,
+            'productos': [
+                {
+                    'descripcion': p['descripcion'], 
+                    'cantidad': p['cantidad'],
+                    'precio_usd': float(p['precio_unitario']) if p['precio_unitario'] else 0
+                } 
+                for p in productos
+            ],
+            'total': float(datos.get('total', 0)),
+            'tasa': float(datos.get('tasa', 0)) if datos.get('tasa') else 0,
             'tasa_actual': tasa_actual,
             'tipo': 'CRÉDITO' if datos.get('credito') else 'CONTADO',
-            'saldo_pendiente': datos.get('saldo_pendiente', 0)
+            'saldo_pendiente': float(datos.get('saldo_pendiente', 0)) if datos.get('saldo_pendiente') else 0
         }
-        img_bytes = generar_recibo_profesional(datos_recibo)
-        return send_file(img_bytes, mimetype='image/png', as_attachment=False)
+        
+        # 5. Generar recibo
+        print("🔵 Generando recibo profesional...")
+        try:
+            from generar_recibo_profesional import generar_recibo_profesional
+            img_bytes = generar_recibo_profesional(datos_recibo)
+            print("✅ Recibo generado exitosamente")
+            return send_file(img_bytes, mimetype='image/png', as_attachment=False)
+        except ImportError:
+            print("⚠️ generar_recibo_profesional no encontrado, usando versión simple")
+            from generar_recibo import generar_recibo_imagen
+            img_bytes = generar_recibo_imagen(datos_recibo)
+            return send_file(img_bytes, mimetype='image/png', as_attachment=False)
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"❌ Error: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
 
 @app.route('/api/ventas/actualizar-fecha-historica/<int:id_venta>', methods=['POST'])
 def api_actualizar_fecha_historica(id_venta):
