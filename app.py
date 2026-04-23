@@ -24,7 +24,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib import colors
 from reportlab.lib.units import inch
-
 from datetime import datetime
 import os
 import psycopg2
