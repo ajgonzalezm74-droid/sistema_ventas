@@ -765,7 +765,7 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
         }
         
     except Exception as e:
-        print(f"Error en reporte_por_rango: {e}")clear
+        print(f"Error en reporte_por_rango: {e}")
         return {'success': False, 'error': str(e)}
 
 
