@@ -25,6 +25,11 @@ def index():
 def api_tasa():
     return jsonify(obtener_tasa_actual())
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    # Responde rápido para consumir pocos recursos
+    return ("OK", 200)
+
 # ========== CLIENTES ==========
 @app.route('/api/clientes', methods=['GET'])
 def api_clientes():
