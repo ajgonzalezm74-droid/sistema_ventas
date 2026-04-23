@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, send_file, make_response
+from flask import Flask, render_template, request, jsonify, send_file
 from database import init_db, get_clients, get_productos as get_products, add_client, add_product, reponer_stock, buscar_producto_por_descripcion, buscar_cliente_por_telefono, buscar_cliente_por_nombre, add_client_validado, get_connection
 from generar_recibo import generar_recibo_imagen
 from generar_recibo_cliente import generar_recibo_cliente
@@ -23,11 +23,12 @@ from ventas_logic import (
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib import colors
-from reportlab.lib.units import inch
 from datetime import datetime
 import os
+import io
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
 
 app = Flask(__name__)
 
@@ -569,137 +570,137 @@ def api_actualizar_fecha_historica(id_venta):
 
 # ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
 # Importa ReportLab (asegúrate de agregarlo a tu requirements.txt)
-
 @app.route('/api/creditos/reporte_cliente_pdf/<int:id_cliente>', methods=['GET'])
 def api_generar_pdf_reporte_cliente(id_cliente):
-    """Genera un PDF de texto real usando datos de Supabase"""
+    conn = None
+    cur = None
     try:
-        # 1. CONSULTA A SUPABASE (Reemplazando SQLite)
-        # Traer datos del cliente
-        res_cliente = supabase.table('clientes').select('nombre, telefono').eq('id', id_cliente).single().execute()
-        cliente = res_cliente.data
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("SELECT nombre, telefono FROM clientes WHERE id = %s", (id_cliente,))
+        cliente = cur.fetchone()
+        
         if not cliente:
             return jsonify({'error': 'Cliente no encontrado'}), 404
 
-        # Traer ventas a crédito no canceladas
-        res_ventas = supabase.table('ventas').select('*').eq('id_cliente', id_cliente).eq('credito', True).eq('cancelada', False).order('fecha_venta').execute()
-        ventas = res_ventas.data
+        cur.execute("""
+            SELECT v.id, v.total, v.tasa, v.fecha_venta,
+                   COALESCE((SELECT SUM(monto_pagado) FROM pagos_credito WHERE id_venta = v.id), 0) as total_pagado
+            FROM ventas v
+            WHERE v.id_cliente = %s AND v.credito = true AND v.pagado = false
+            ORDER BY v.fecha_venta ASC
+        """, (id_cliente,))
+        
+        ventas = cur.fetchall()
 
         if not ventas:
-            return jsonify({'error': 'Cliente no tiene créditos registrados'}), 404
+            return jsonify({'error': 'No hay créditos pendientes'}), 404
 
         tasa_actual = obtener_tasa_actual().get("bcv_usd", 55.0)
 
-        # 2. CONFIGURACIÓN DEL PDF
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer, pagesize=LETTER)
         ancho, alto = LETTER
-        y = alto - 50  # Punto de inicio arriba
-
+        
         # Encabezado
         c.setFillColor(colors.HexColor("#1976D2"))
-        c.rect(0, alto - 80, ancho, 80, fill=1, stroke=0)
+        c.rect(0, alto - 70, ancho, 70, fill=1, stroke=0)
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 18)
         c.drawCentredString(ancho/2, alto - 45, "VENTAS PRO")
         c.setFont("Helvetica", 12)
-        c.drawCentredString(ancho/2, alto - 65, "REPORTE GLOBAL DE CRÉDITOS")
-
-        # Datos del Cliente
-        y = alto - 110
+        c.drawCentredString(ancho/2, alto - 65, "REPORTE DE CRÉDITOS")
+        
+        y = alto - 105
         c.setFillColor(colors.black)
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(40, y, f"Cliente: {cliente['nombre']}")
+        c.drawString(50, y, f"Cliente: {cliente['nombre']}")
+        y -= 20
         c.setFont("Helvetica", 10)
-        y -= 15
-        c.drawString(40, y, f"Teléfono: {cliente.get('telefono') or 'No registrado'}")
-        y -= 15
-        c.drawString(40, y, f"Fecha de reporte: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        c.drawString(50, y, f"Teléfono: {cliente.get('telefono', 'No registrado')}")
+        y -= 20
+        c.drawString(50, y, f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        y -= 20
+        c.drawString(50, y, f"Tasa BCV: Bs {tasa_actual:,.2f}")
         
-        y -= 20
-        c.setStrokeColor(colors.lightgrey)
-        c.line(40, y, ancho-40, y)
+        y -= 30
+        c.line(50, y, ancho-50, y)
         y -= 25
-
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(40, y, "DETALLE DE CRÉDITOS")
-        y -= 20
-
+        
+        # Encabezados tabla
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(50, y, "ID")
+        c.drawString(100, y, "Fecha")
+        c.drawString(200, y, "Total Bs")
+        c.drawString(300, y, "Pagado")
+        c.drawString(400, y, "Saldo")
+        
+        y -= 15
+        c.line(50, y, ancho-50, y)
+        y -= 15
+        
+        c.setFont("Helvetica", 9)
         total_adeudado = 0
-
-        # 3. LISTADO DE VENTAS
-        for venta in ventas:
-            # Consultar detalles de productos en Supabase para esta venta
-            res_detalles = supabase.table('detalles_venta').select('cantidad, productos(descripcion)').eq('id_venta', venta['id']).execute()
-            detalles = res_detalles.data
-
-            # Consultar total pagado en Supabase
-            res_pagos = supabase.table('pagos_credito').select('monto_pagado').eq('id_venta', venta['id']).execute()
-            total_pagado = sum(p['monto_pagado'] for p in res_pagos.data)
-
-            total_usd = venta['total'] / venta['tasa'] if venta['tasa'] > 0 else 0
-            total_actualizado = total_usd * tasa_actual
-            saldo_pendiente = max(0, total_actualizado - total_pagado)
-            total_adeudado += saldo_pendiente
-
-            # Verificar si necesitamos otra página
-            if y < 100:
+        
+        for v in ventas:
+            total_usd = float(v['total']) / float(v['tasa']) if v['tasa'] > 0 else 0
+            monto_hoy = total_usd * tasa_actual
+            saldo = max(0, monto_hoy - float(v['total_pagado']))
+            
+            if saldo <= 0.01:
+                continue
+                
+            total_adeudado += saldo
+            fecha = v['fecha_venta'].strftime('%d/%m/%Y') if v['fecha_venta'] else '-'
+            
+            if y < 60:
                 c.showPage()
                 y = alto - 50
-
-            # Dibujar cuadro de venta
-            c.setStrokeColor(colors.HexColor("#1976D2"))
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y, f"Venta #{venta['id']} - Fecha: {venta['fecha_venta'][:10]}")
-            y -= 15
+                c.setFont("Helvetica", 9)
             
-            c.setFont("Helvetica-Oblique", 9)
-            c.setFillColor(colors.grey)
-            prods = ", ".join([f"{d['productos']['descripcion']} (x{d['cantidad']})" for d in detalles[:3]])
-            c.drawString(60, y, prods)
-            y -= 15
-
-            c.setFillColor(colors.black)
-            c.setFont("Helvetica", 9)
-            c.drawString(60, y, f"Original: Bs {total_actualizado:,.2f}")
-            c.setFillColor(colors.darkgreen)
-            c.drawString(180, y, f"Pagado: Bs {total_pagado:,.2f}")
-            c.setFillColor(colors.red)
-            c.drawString(300, y, f"Saldo: Bs {saldo_pendiente:,.2f}")
-            
-            y -= 10
-            c.setStrokeColor(colors.whitesmoke)
-            c.line(50, y, ancho-50, y)
-            y -= 20
-
-        # Resumen Final
-        y -= 20
+            c.drawString(50, y, str(v['id']))
+            c.drawString(100, y, fecha)
+            c.drawString(200, y, f"{monto_hoy:,.2f}")
+            c.drawString(300, y, f"{float(v['total_pagado']):,.2f}")
+            c.drawString(400, y, f"{saldo:,.2f}")
+            y -= 18
+        
+        y -= 15
+        c.line(300, y+10, ancho-50, y+10)
+        c.setFont("Helvetica-Bold", 12)
         c.setFillColor(colors.HexColor("#1976D2"))
-        c.rect(40, y-10, ancho-80, 30, fill=1, stroke=0)
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", 13)
-        c.drawCentredString(ancho/2, y, f"TOTAL ADEUDADO: Bs {total_adeudado:,.2f}")
-
-        # Pie de página
+        c.drawString(300, y, f"TOTAL: Bs {total_adeudado:,.2f}")
+        
         c.setFillColor(colors.grey)
         c.setFont("Helvetica", 8)
-        c.drawCentredString(ancho/2, 30, "Documento válido como comprobante de cuenta.")
+        c.drawCentredString(ancho/2, 30, "Documento válido como comprobante")
         
         c.save()
         buffer.seek(0)
-
+        
+        cur.close()
+        conn.close()
+        
         return send_file(
-            buffer,
-            mimetype='application/pdf',
+            buffer, 
+            mimetype='application/pdf', 
             as_attachment=False,
-            download_name=f"Reporte_{cliente['nombre']}.pdf"
+            download_name=f"Reporte_{cliente['nombre'].replace(' ', '_')}.pdf"
         )
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Error: {e}")
         return jsonify({'error': str(e)}), 500
-    
-    
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()  
+
+
+
+
 # ========== FUNCIÓN PARA RECIBO DE CANCELACIÓN GLOBAL ==========
 def generar_recibo_cancelacion_global(datos_cliente, lista_deudas, tasa_actual):
     """
