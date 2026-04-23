@@ -28,7 +28,8 @@ import os
 import io
 import psycopg2
 from psycopg2.extras import RealDictCursor
-
+from datetime import datetime
+from database import get_connection
 
 app = Flask(__name__)
 
@@ -1016,9 +1017,10 @@ def generar_recibo_cancelacion_global(datos_cliente, lista_deudas, tasa_actual):
         return img_bytes
 
 # ========== API: CANCELACIÓN GLOBAL DE CRÉDITOS ==========
+# ========== API: CANCELACIÓN GLOBAL DE CRÉDITOS ==========
 @app.route('/api/creditos/cancelar_global', methods=['POST'])
 def cancelar_creditos_global():
-    """Cancela TODAS las deudas de un cliente de una sola vez - Versión PostgreSQL/Supabase"""
+    """Cancela TODAS las deudas de un cliente de una sola vez - Versión PostgreSQL"""
     try:
         data = request.json
         cliente_id = data.get('cliente_id')
@@ -1030,7 +1032,6 @@ def cancelar_creditos_global():
         if tasa_actual <= 0:
             return jsonify({'error': 'Tasa actual inválida'}), 400
 
-        # Conectar a Supabase
         conn = get_connection()
         cursor = conn.cursor()
 
@@ -1038,24 +1039,16 @@ def cancelar_creditos_global():
             # Iniciar transacción
             cursor.execute("BEGIN")
 
-            # Obtener deudas pendientes del cliente (adaptado para PostgreSQL)
+            # Obtener deudas pendientes del cliente (PostgreSQL: true/false, %s)
             cursor.execute("""
-                SELECT 
-                    v.id,
-                    v.fecha_venta,
-                    v.total,
-                    v.tasa,
-                    v.monto_pagado,
-                    c.nombre as cliente_nombre,
-                    c.telefono,
-                    c.direccion
+                SELECT v.id, v.fecha_venta, v.total, v.tasa, 
+                       c.nombre as cliente_nombre, c.telefono
                 FROM ventas v
                 JOIN clientes c ON v.id_cliente = c.id
                 WHERE v.id_cliente = %s
                 AND v.credito = true
-                AND (v.pagado = false OR v.pagado IS NULL)
-                AND (v.cancelada = false OR v.cancelada IS NULL)
-                AND (v.monto_pagado IS NULL OR v.monto_pagado < v.total)
+                AND v.pagado = false
+                AND v.cancelada = false
             """, (cliente_id,))
 
             deudas = cursor.fetchall()
@@ -1067,25 +1060,25 @@ def cancelar_creditos_global():
 
             total_cancelado_bs = 0
             deudas_canceladas = []
-            now = datetime.now()
+            ahora = datetime.now()
 
             for deuda in deudas:
-                # Extraer datos
                 id_venta = deuda[0]
                 fecha_venta = deuda[1]
                 total_venta = float(deuda[2])
                 tasa_venta = float(deuda[3]) if deuda[3] else 0
-                monto_pagado_anterior = float(deuda[4]) if deuda[4] else 0
-                
+                cliente_nombre = deuda[4]
+                cliente_telefono = deuda[5] if deuda[5] else ''
+
                 # Calcular monto a cancelar
                 if tasa_venta > 0:
                     total_usd = total_venta / tasa_venta
                 else:
-                    total_usd = total_venta / 55.0  # Tasa por defecto
+                    total_usd = total_venta / 55.0
                 
                 monto_cancelar = total_usd * tasa_actual
-                
-                # Insertar registro de pago (tabla pagos_credito)
+
+                # Insertar registro de pago (PostgreSQL: %s, RETURNING id)
                 cursor.execute("""
                     INSERT INTO pagos_credito (id_venta, monto_pagado, tasa_pago, observacion, fecha_pago)
                     VALUES (%s, %s, %s, %s, %s)
@@ -1094,26 +1087,21 @@ def cancelar_creditos_global():
                     id_venta,
                     monto_cancelar,
                     tasa_actual,
-                    f'CANCELACIÓN GLOBAL - {now.strftime("%Y-%m-%d %H:%M:%S")}',
-                    now
+                    f'CANCELACIÓN GLOBAL - {ahora.strftime("%Y-%m-%d %H:%M:%S")}',
+                    ahora
                 ))
-                
-                # Actualizar la venta
-                nuevo_monto_pagado = monto_pagado_anterior + monto_cancelar
-                
+
+                # Actualizar la venta (PostgreSQL: true/false, sin monto_pagado)
                 cursor.execute("""
                     UPDATE ventas
                     SET pagado = true,
-                        monto_pagado = %s,
                         saldo_pendiente = 0,
-                        pagado_parcial = false,
-                        fecha_pago = %s,
-                        updated_at = %s
+                        fecha_pago = %s
                     WHERE id = %s
-                """, (nuevo_monto_pagado, now, now, id_venta))
-                
+                """, (ahora, id_venta))
+
                 total_cancelado_bs += monto_cancelar
-                
+
                 # Obtener productos de la venta
                 cursor.execute("""
                     SELECT p.descripcion, dv.cantidad
@@ -1122,10 +1110,13 @@ def cancelar_creditos_global():
                     WHERE dv.id_venta = %s
                 """, (id_venta,))
                 productos = cursor.fetchall()
-                
-                # Formatear fecha para mostrar
-                fecha_venta_str = fecha_venta.strftime('%Y-%m-%d %H:%M:%S') if fecha_venta and hasattr(fecha_venta, 'strftime') else str(fecha_venta)
-                
+
+                # Formatear fecha
+                if isinstance(fecha_venta, datetime):
+                    fecha_venta_str = fecha_venta.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    fecha_venta_str = str(fecha_venta)
+
                 deudas_canceladas.append({
                     'id_venta': id_venta,
                     'fecha_venta': fecha_venta_str,
@@ -1133,45 +1124,41 @@ def cancelar_creditos_global():
                     'tasa': tasa_venta,
                     'productos': [{'descripcion': p[0], 'cantidad': p[1]} for p in productos]
                 })
-            
-            # Obtener datos del cliente para el recibo
-            cliente_nombre = deudas[0][5]  # cliente_nombre está en índice 5
-            cliente_telefono = deudas[0][6] if deudas[0][6] else ''
-            
+
+            # Datos del cliente (usar el primero de la lista)
             datos_cliente = {
                 'id': cliente_id,
-                'nombre': cliente_nombre,
-                'telefono': cliente_telefono,
-                'direccion': deudas[0][7] if len(deudas[0]) > 7 and deudas[0][7] else ''
+                'nombre': deudas[0][4],
+                'telefono': deudas[0][5] if deudas[0][5] else ''
             }
-            
+
             # Commit de la transacción
             cursor.execute("COMMIT")
             conn.close()
-            
+
             # Generar recibo
             recibo_img = generar_recibo_cancelacion_global(datos_cliente, deudas_canceladas, tasa_actual)
-            
+
             return send_file(
                 recibo_img,
                 mimetype='image/png',
                 as_attachment=False,
-                download_name=f"cancelacion_global_{datos_cliente['nombre'].replace(' ', '_')}_{now.strftime('%Y%m%d_%H%M%S')}.png"
+                download_name=f"cancelacion_global_{datos_cliente['nombre'].replace(' ', '_')}_{ahora.strftime('%Y%m%d_%H%M%S')}.png"
             )
-            
+
         except Exception as e:
-            # Rollback en caso de error
             cursor.execute("ROLLBACK")
             conn.close()
             raise e
-            
+
     except Exception as e:
-        print(f"❌ Error en cancelación global: {str(e)}")
+        print(f"❌ Error en cancelación global: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
-# ========== API: PAGAR CRÉDITO CON TASA ACTUAL ==========
+    
+    
+    # ========== API: PAGAR CRÉDITO CON TASA ACTUAL ==========
 @app.route('/api/creditos/pagar', methods=['POST'])
 def api_pagar_credito_con_tasa():
     """Registra pago de un crédito individual con la tasa actual - Versión PostgreSQL"""
