@@ -6,6 +6,7 @@ from exchange_provider import ExchangeProvider
 
 exchange = ExchangeProvider()
 
+# ========== FUNCIONES AUXILIARES ==========
 
 def verificar_stock_multiples(productos):
     try:
@@ -44,185 +45,7 @@ def actualizar_inventario_multiples(productos, es_venta=True):
         return False
 
 
-def registrar_venta(id_cliente, productos, es_credito=False, fecha_manual=None):
-    try:
-        stock_ok, mensaje = verificar_stock_multiples(productos)
-        if not stock_ok:
-            return {"success": False, "error": mensaje}
-        
-        tasas = exchange.get_all_rates(force_update=True)
-        tasa_bs = tasas.get("bcv_usd", 0)
-        if tasa_bs == 0:
-            return {"success": False, "error": "No se pudo obtener la tasa BCV"}
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        total_venta = 0
-        detalles = []
-        
-        for item in productos:
-            id_producto = item['id_producto']
-            cantidad = item['cantidad']
-            cursor.execute("""
-                SELECT p.descripcion, i.costo 
-                FROM productos p 
-                JOIN inventario i ON p.id = i.id_producto 
-                WHERE p.id = %s
-            """, (id_producto,))
-            producto = cursor.fetchone()
-            if not producto:
-                conn.close()
-                return {"success": False, "error": f"Producto ID {id_producto} no encontrado"}
-            
-            descripcion, costo_dolar = producto
-            precio_unitario_bs = costo_dolar * tasa_bs
-            subtotal = precio_unitario_bs * cantidad
-            total_venta += subtotal
-            
-            detalles.append({
-                'id_producto': id_producto, 'cantidad': cantidad, 'descripcion': descripcion,
-                'precio_unitario': precio_unitario_bs, 'subtotal': subtotal, 'costo_dolar': costo_dolar
-            })
-        
-        pagado = True if not es_credito else False
-        credito = True if es_credito else False
-        
-        if fecha_manual:
-            fecha_venta = fecha_manual
-        else:
-            fecha_venta = datetime.now()
-        
-        cursor.execute("""
-            INSERT INTO ventas (id_cliente, total, tasa, credito, pagado, fecha_venta, saldo_pendiente) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-        """, (id_cliente, total_venta, tasa_bs, credito, pagado, fecha_venta, total_venta if es_credito else 0))
-        
-        id_venta = cursor.fetchone()[0]
-        
-        for detalle in detalles:
-            cursor.execute("""
-                INSERT INTO detalles_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal) 
-                VALUES (%s, %s, %s, %s, %s)
-            """, (id_venta, detalle['id_producto'], detalle['cantidad'], detalle['precio_unitario'], detalle['subtotal']))
-        
-        conn.commit()
-        productos_para_inventario = [{'id_producto': d['id_producto'], 'cantidad': d['cantidad']} for d in detalles]
-        actualizar_inventario_multiples(productos_para_inventario, es_venta=True)
-        conn.close()
-        
-        return {
-            "success": True, "id_venta": id_venta, "total_bs": total_venta, "tasa_usada": tasa_bs,
-            "tipo": "crédito" if es_credito else "contado", "detalles": detalles
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-def obtener_creditos_agrupados():
-    """Obtiene todos los créditos pendientes agrupados por cliente"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        cursor.execute('''
-            SELECT v.*, c.nombre as cliente_nombre, c.telefono as cliente_telefono
-            FROM ventas v
-            JOIN clientes c ON v.id_cliente = c.id
-            WHERE v.credito = TRUE 
-            AND v.pagado = FALSE 
-            AND v.cancelada = FALSE
-            ORDER BY c.nombre, v.fecha_venta
-        ''')
-        
-        ventas = cursor.fetchall()
-        
-        clientes_creditos = {}
-        for venta in ventas:
-            cliente_id = venta['id_cliente']
-            if cliente_id not in clientes_creditos:
-                clientes_creditos[cliente_id] = {
-                    'cliente_id': cliente_id,
-                    'cliente_nombre': venta['cliente_nombre'],
-                    'cliente_telefono': venta['cliente_telefono'],
-                    'deudas': []
-                }
-            
-            cursor2 = conn.cursor(cursor_factory=RealDictCursor)
-            cursor2.execute('''
-                SELECT dv.*, p.descripcion
-                FROM detalles_venta dv
-                JOIN productos p ON dv.id_producto = p.id
-                WHERE dv.id_venta = %s
-            ''', (venta['id'],))
-            productos = cursor2.fetchall()
-            cursor2.close()
-            
-            saldo_pendiente = venta['saldo_pendiente'] if venta['saldo_pendiente'] else venta['total']
-            
-            clientes_creditos[cliente_id]['deudas'].append({
-                'id_venta': venta['id'],
-                'fecha_venta': venta['fecha_venta'],
-                'total': float(venta['total']),
-                'tasa': float(venta['tasa']) if venta['tasa'] else 0,
-                'saldo_pendiente': float(saldo_pendiente),
-                'productos': [{'descripcion': p['descripcion'], 'cantidad': p['cantidad']} for p in productos]
-            })
-        
-        conn.close()
-        return list(clientes_creditos.values())
-    except Exception as e:
-        print(f"Error en obtener_creditos_agrupados: {e}")
-        return []
-
-
-# El resto de funciones deben adaptarse de manera similar
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-from database import get_connection
-from exchange_provider import ExchangeProvider
-
-exchange = ExchangeProvider()
-
-
-def verificar_stock_multiples(productos):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        for item in productos:
-            id_producto = item['id_producto']
-            cantidad = item['cantidad']
-            cursor.execute("SELECT cantidad FROM inventario WHERE id_producto = %s", (id_producto,))
-            resultado = cursor.fetchone()
-            if not resultado or resultado[0] < cantidad:
-                conn.close()
-                return False, f"Stock insuficiente para producto ID {id_producto}"
-        conn.close()
-        return True, "OK"
-    except Exception as e:
-        return False, str(e)
-
-
-def actualizar_inventario_multiples(productos, es_venta=True):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        for item in productos:
-            id_producto = item['id_producto']
-            cantidad = item['cantidad']
-            if es_venta:
-                cursor.execute("UPDATE inventario SET cantidad = cantidad - %s WHERE id_producto = %s", (cantidad, id_producto))
-            else:
-                cursor.execute("UPDATE inventario SET cantidad = cantidad + %s, devolucion = devolucion + %s WHERE id_producto = %s", (cantidad, cantidad, id_producto))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Error actualizando inventario: {e}")
-        return False
-
+# ========== FUNCIONES PRINCIPALES ==========
 
 def registrar_venta(id_cliente, productos, es_credito=False, fecha_manual=None):
     try:
@@ -319,14 +142,20 @@ def cancelar_venta(id_venta):
         return {"success": False, "error": str(e)}
 
 
+# ========== CRÉDITOS ==========
+
 def obtener_creditos_agrupados():
-    """Obtiene todos los créditos pendientes agrupados por cliente"""
+    """Obtiene todos los créditos pendientes agrupados por cliente - CON PAGOS RESTADOS"""
     try:
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
+        tasas = exchange.get_all_rates(force_update=False)
+        tasa_actual = tasas.get("bcv_usd", 55.0)
+        
         cursor.execute('''
-            SELECT v.*, c.nombre as cliente_nombre, c.telefono as cliente_telefono
+            SELECT v.id, v.id_cliente, v.fecha_venta, v.total, v.tasa,
+                   c.nombre as cliente_nombre, c.telefono as cliente_telefono
             FROM ventas v
             JOIN clientes c ON v.id_cliente = c.id
             WHERE v.credito = TRUE 
@@ -336,10 +165,31 @@ def obtener_creditos_agrupados():
         ''')
         
         ventas = cursor.fetchall()
-        
         clientes_creditos = {}
+        
         for venta in ventas:
             cliente_id = venta['id_cliente']
+            id_venta = venta['id']
+            total_venta = float(venta['total'])
+            tasa_venta = float(venta['tasa']) if venta['tasa'] else 55.0
+            
+            total_usd = total_venta / tasa_venta if tasa_venta > 0 else 0
+            total_actualizado = total_usd * tasa_actual
+            
+            cursor_pagos = conn.cursor()
+            cursor_pagos.execute("""
+                SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado
+                FROM pagos_credito
+                WHERE id_venta = %s
+            """, (id_venta,))
+            total_pagado = float(cursor_pagos.fetchone()[0] or 0)
+            cursor_pagos.close()
+            
+            saldo_pendiente = total_actualizado - total_pagado
+            
+            if saldo_pendiente <= 0.01:
+                continue
+            
             if cliente_id not in clientes_creditos:
                 clientes_creditos[cliente_id] = {
                     'cliente_id': cliente_id,
@@ -348,31 +198,45 @@ def obtener_creditos_agrupados():
                     'deudas': []
                 }
             
-            cursor2 = conn.cursor(cursor_factory=RealDictCursor)
-            cursor2.execute('''
-                SELECT dv.*, p.descripcion
+            cursor_prod = conn.cursor(cursor_factory=RealDictCursor)
+            cursor_prod.execute('''
+                SELECT p.descripcion, dv.cantidad
                 FROM detalles_venta dv
                 JOIN productos p ON dv.id_producto = p.id
                 WHERE dv.id_venta = %s
-            ''', (venta['id'],))
-            productos = cursor2.fetchall()
-            cursor2.close()
-            
-            saldo_pendiente = venta['saldo_pendiente'] if venta['saldo_pendiente'] else venta['total']
+            ''', (id_venta,))
+            productos = cursor_prod.fetchall()
+            cursor_prod.close()
             
             clientes_creditos[cliente_id]['deudas'].append({
-                'id_venta': venta['id'],
-                'fecha_venta': venta['fecha_venta'],
-                'total': float(venta['total']),
-                'tasa': float(venta['tasa']) if venta['tasa'] else 0,
-                'saldo_pendiente': float(saldo_pendiente),
+                'id_venta': id_venta,
+                'fecha_venta': venta['fecha_venta'].strftime('%d/%m/%Y') if venta['fecha_venta'] else '-',
+                'total_original': total_venta,
+                'tasa_venta': tasa_venta,
+                'total_usd': total_usd,
+                'total_actualizado': total_actualizado,
+                'total_pagado': total_pagado,
+                'saldo_pendiente': saldo_pendiente,
                 'productos': [{'descripcion': p['descripcion'], 'cantidad': p['cantidad']} for p in productos]
             })
         
         conn.close()
-        return list(clientes_creditos.values())
+        
+        resultado = []
+        for cliente_data in clientes_creditos.values():
+            deuda_total = sum(d['saldo_pendiente'] for d in cliente_data['deudas'])
+            resultado.append({
+                'cliente_id': cliente_data['cliente_id'],
+                'cliente_nombre': cliente_data['cliente_nombre'],
+                'cliente_telefono': cliente_data['cliente_telefono'],
+                'deuda_total': deuda_total,
+                'deudas': cliente_data['deudas']
+            })
+        
+        return resultado
+        
     except Exception as e:
-        print(f"Error en obtener_creditos_agrupados: {e}")
+        print(f"❌ Error en obtener_creditos_agrupados: {e}")
         return []
 
 
@@ -490,6 +354,14 @@ def pagar_credito_con_tasa(id_venta, monto=0, observacion="", tasa_actual=None):
         return {"success": False, "error": str(e)}
 
 
+def pagar_credito(id_venta):
+    return pagar_credito_con_tasa(id_venta, 0, "Pago completo", None)
+
+
+def pagar_credito_parcial(id_venta, monto_pagado, observacion=""):
+    return pagar_credito_con_tasa(id_venta, monto_pagado, observacion, None)
+
+
 def ventas_con_retraso():
     try:
         conn = get_connection()
@@ -576,6 +448,12 @@ def ventas_con_retraso():
         return []
 
 
+def cancelar_creditos_global(cliente_id, tasa_actual=None):
+    return {"success": False, "error": "Función no implementada en esta versión (usa la ruta de API)"}
+
+
+# ========== REPORTES ==========
+
 def reporte_ventas(periodo="semanal"):
     try:
         conn = get_connection()
@@ -613,7 +491,7 @@ def reporte_ventas(periodo="semanal"):
                 JOIN productos p ON dv.id_producto = p.id
                 JOIN ventas v ON dv.id_venta = v.id
                 WHERE v.cancelada = FALSE
-                GROUP BY dv.id_producto
+                GROUP BY p.id, p.descripcion
                 ORDER BY total_bs DESC
             """)
         
@@ -634,7 +512,6 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        # 1. Corregimos los filtros SQL para que usen booleanos correctos de Postgres
         filtro_sql = ""
         if filtro_venta == "contado":
             filtro_sql = "AND v.credito = FALSE"
@@ -659,7 +536,6 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
             """, (fecha_inicio, fecha_fin))
             
         elif tipo == "productos":
-            # CORRECCIÓN CLAVE: p.descripcion en el GROUP BY y v.credito en los CASE
             cursor.execute(f"""
                 SELECT 
                     p.descripcion as producto,
@@ -735,8 +611,7 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
                 elif tipo == "semana":
                     periodo = row['semana'].strftime('%d/%m/%Y')
                 elif tipo == "mes":
-                    # Usamos una forma segura para el nombre del mes
-                    periodo = row['mes'].strftime('%m/%Y') 
+                    periodo = row['mes'].strftime('%m/%Y')
                 
                 item = {
                     'periodo': periodo,
@@ -749,8 +624,8 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
             
             data.append(item)
             t_contado += float(row['total_contado'])
-            t_pendiente += float(row['total_credito_pendiente'] if tipo == "productos" else row['total_credito_pendiente'])
-            t_cancelado += float(row['total_credito_cancelado'] if tipo == "productos" else row['total_credito_cancelado'])
+            t_pendiente += float(row['total_credito_pendiente'])
+            t_cancelado += float(row['total_credito_cancelado'])
             t_general += float(row['total_bs'])
         
         return {
@@ -769,6 +644,7 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
         return {'success': False, 'error': str(e)}
 
 
+# ========== FUNCIONES ADICIONALES ==========
 
 def obtener_historial_pagos(id_venta):
     try:
@@ -882,15 +758,3 @@ def obtener_estado_credito(id_venta):
 def registrar_venta_simple(id_cliente, id_producto, cantidad, es_credito=False):
     productos = [{"id_producto": id_producto, "cantidad": cantidad}]
     return registrar_venta(id_cliente, productos, es_credito)
-
-
-def pagar_credito(id_venta):
-    return pagar_credito_con_tasa(id_venta, 0, "Pago completo", None)
-
-
-def pagar_credito_parcial(id_venta, monto_pagado, observacion=""):
-    return pagar_credito_con_tasa(id_venta, monto_pagado, observacion, None)
-
-
-def cancelar_creditos_global(cliente_id, tasa_actual=None):
-    return {"success": False, "error": "Función no implementada en esta versión"}
