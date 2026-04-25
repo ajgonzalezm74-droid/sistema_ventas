@@ -543,10 +543,10 @@ async function cargarCreditosAgrupados() {
         let html = '';
         
         for (const cliente of clientes) {
+            // Calcular total deuda del cliente (usando saldo_pendiente que ya viene con tasa actual)
             let totalDeudaCliente = 0;
             for (const deuda of cliente.deudas) {
-                const totalUsd = deuda.total / deuda.tasa;
-                totalDeudaCliente += totalUsd * currentTasa;
+                totalDeudaCliente += deuda.saldo_pendiente || 0;
             }
             
             html += `
@@ -564,7 +564,7 @@ async function cargarCreditosAgrupados() {
                             <span class="total-amount">Bs ${totalDeudaCliente.toFixed(2)}</span>
                         </div>
                         <div class="cliente-actions">
-                            <button class="btn-reporte-global" onclick="event.stopPropagation(); verReporteGlobalCliente(${cliente.cliente_id}, '${escapeHtml(cliente.cliente_nombre)}')">
+                            <button class="btn-reporte-global" onclick="event.stopPropagation(); verReporteGlobalCliente(${cliente.cliente_id})">
                                 <i class="material-icons">description</i> Reporte
                             </button>
                             <button class="btn-pago-global" onclick="event.stopPropagation(); cancelarGlobal(${cliente.cliente_id}, '${escapeHtml(cliente.cliente_nombre)}')">
@@ -575,17 +575,19 @@ async function cargarCreditosAgrupados() {
                     </div>
                     <div class="cliente-deudas" style="display: none;">
                         ${cliente.deudas.map(deuda => {
-                            const totalUsd = deuda.total / deuda.tasa;
-                            const totalActualizado = totalUsd * currentTasa;
-                            const fechaVenta = deuda.fecha_venta.split(' ')[0];
+                            // ✅ Mostrar deuda con abono realizado
+                            const pagado = deuda.total_pagado || 0;
+                            const saldo = deuda.saldo_pendiente || 0;
+                            const totalOriginal = deuda.total_original || deuda.total || 0;
                             
                             return `
                                 <div class="deuda-item" data-venta-id="${deuda.id_venta}">
-                                    <div class="deuda-fecha">📅 ${fechaVenta}</div>
+                                    <div class="deuda-fecha">📅 ${deuda.fecha_venta || '-'}</div>
                                     <div class="deuda-productos">📦 ${deuda.productos.map(p => `${escapeHtml(p.descripcion)} x${p.cantidad}`).join(', ')}</div>
                                     <div class="deuda-montos">
-                                        <span>Original: Bs ${deuda.total.toFixed(2)}</span>
-                                        <span>Al pagar hoy: Bs ${totalActualizado.toFixed(2)}</span>
+                                        <span>💰 Deuda original: Bs ${totalOriginal.toFixed(2)}</span>
+                                        <span>✅ Abonado: Bs ${pagado.toFixed(2)}</span>
+                                        <span style="color: #e74c3c;">⚠️ Saldo pendiente: Bs ${saldo.toFixed(2)}</span>
                                     </div>
                                     <div class="deuda-actions">
                                         <button class="btn-pagar-individual" onclick="pagarCreditoIndividual(${deuda.id_venta})">
@@ -612,6 +614,8 @@ async function cargarCreditosAgrupados() {
         if (lista) lista.innerHTML = '<p class="empty" style="color:red;">Error al cargar créditos</p>';
     }
 }
+
+
 
 function toggleClienteDeudas(headerElement) {
     const card = headerElement.closest('.cliente-credito-card');
@@ -649,14 +653,35 @@ async function verRecibo(id_venta) {
 async function verReporteGlobalCliente(clienteId, clienteNombre) {
     showLoading();
     try {
+        // Si no recibimos el nombre, intentamos obtenerlo del DOM
+        let nombreCliente = clienteNombre;
+        if (!nombreCliente) {
+            // Buscar el elemento del cliente en el DOM
+            const card = document.querySelector(`.cliente-credito-card[data-cliente-id="${clienteId}"]`);
+            if (card) {
+                const nombreElement = card.querySelector('.cliente-info strong');
+                if (nombreElement) {
+                    nombreCliente = nombreElement.innerText;
+                }
+            }
+        }
+        
+        // Si aún no tenemos nombre, usar un placeholder
+        if (!nombreCliente) {
+            nombreCliente = clienteId.toString();
+        }
+        
         const response = await fetch(`/api/creditos/reporte_cliente_pdf/${clienteId}`);
+        
         if (response.ok) {
             const blob = await response.blob();
-            const nombreArchivo = `reporte_${clienteNombre.replace(/\s/g, '_')}_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.png`;
+            // Limpiar el nombre para el archivo (reemplazar solo si existe)
+            let nombreArchivo = `reporte_${nombreCliente.replace(/\s/g, '_')}_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.png`;
             abrirReciboEnModal(blob, nombreArchivo);
-            showToast(`📊 Reporte de ${clienteNombre} cargado`);
+            showToast(`📊 Reporte de ${nombreCliente} cargado`);
         } else {
-            showToast('Error al generar el reporte');
+            const error = await response.json();
+            showToast(error.error || 'Error al generar el reporte');
         }
     } catch (error) {
         console.error('Error:', error);
