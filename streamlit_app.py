@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import io
-from PIL import Image
 import traceback
 
 # IMPORTAR TODAS LAS FUNCIONES ORIGINALES
@@ -27,12 +26,10 @@ from ventas_logic import (
     obtener_estado_credito,
     reporte_por_rango,
     obtener_creditos_agrupados,
-    cancelar_creditos_global,
     pagar_credito_con_tasa
 )
 
 from generar_recibo_profesional import generar_recibo_profesional
-from generar_recibo import generar_recibo_imagen
 
 # Configuración de la página
 st.set_page_config(
@@ -103,14 +100,13 @@ if opcion == "🏠 Dashboard":
         col3.metric("📦 Productos", total_productos)
         col4.metric("💳 Créditos Pendientes", f"Bs {creditos_pendientes:,.2f}")
         
-        # Últimas ventas - IGUAL QUE EL ORIGINAL
+        # Últimas ventas
         st.subheader("📊 Últimas Ventas")
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT v.id, v.fecha_venta, c.nombre as cliente, v.total, 
-                   CASE WHEN v.credito = true THEN 'Crédito' ELSE 'Contado' END as tipo,
-                   CASE WHEN v.pagado = true THEN 'Pagado' ELSE 'Pendiente' END as estado
+                   CASE WHEN v.credito = true THEN 'Crédito' ELSE 'Contado' END as tipo
             FROM ventas v
             JOIN clientes c ON v.id_cliente = c.id
             ORDER BY v.fecha_venta DESC
@@ -120,7 +116,7 @@ if opcion == "🏠 Dashboard":
         conn.close()
         
         if ultimas_ventas:
-            df = pd.DataFrame(ultimas_ventas, columns=['ID', 'Fecha', 'Cliente', 'Total', 'Tipo', 'Estado'])
+            df = pd.DataFrame(ultimas_ventas, columns=['ID', 'Fecha', 'Cliente', 'Total', 'Tipo'])
             df['Fecha'] = pd.to_datetime(df['Fecha']).dt.strftime('%d/%m/%Y %H:%M')
             st.dataframe(df, use_container_width=True)
         else:
@@ -148,6 +144,7 @@ elif opcion == "🛍️ Registrar Venta":
         cliente_seleccionado = None
         
         if buscar_cliente:
+            # Buscar por teléfono primero
             cliente = buscar_cliente_por_telefono(buscar_cliente)
             if not cliente:
                 clientes = buscar_cliente_por_nombre(buscar_cliente)
@@ -225,7 +222,7 @@ elif opcion == "🛍️ Registrar Venta":
                 st.session_state.carrito = []
                 st.rerun()
     
-    # Registrar venta - MISMA LÓGICA QUE EL ORIGINAL
+    # Registrar venta
     credito = st.checkbox("Venta a crédito")
     
     if st.button("✅ Registrar Venta", type="primary", use_container_width=True):
@@ -249,21 +246,21 @@ elif opcion == "🛍️ Registrar Venta":
             if resultado.get('success'):
                 st.success(f"✅ Venta registrada exitosamente!")
                 st.balloons()
-                st.info(f"**Total:** Bs {resultado.get('total', 0):,.2f}")
+                st.info(f"**Total:** Bs {resultado.get('total_bs', 0):,.2f}")
                 st.info(f"**Tipo:** {'Crédito' if credito else 'Contado'}")
                 
-                # Generar recibo automáticamente como en el original
+                # Generar recibo
                 try:
                     datos_recibo = {
-                        'cliente': resultado.get('cliente_nombre', 'Cliente'),
-                        'telefono': '',
+                        'cliente': cliente_seleccionado['nombre'] if cliente_seleccionado else 'Cliente',
+                        'telefono': cliente_seleccionado.get('telefono', '') if cliente_seleccionado else '',
                         'fecha': datetime.now().strftime('%d/%m/%Y'),
                         'productos': productos_venta,
-                        'total': resultado.get('total', 0),
+                        'total': resultado.get('total_bs', 0),
                         'tasa': tasa_actual.get('bcv_usd', 55.0),
                         'tasa_actual': tasa_actual.get('bcv_usd', 55.0),
                         'tipo': 'CRÉDITO' if credito else 'CONTADO',
-                        'saldo_pendiente': resultado.get('total', 0) if credito else 0
+                        'saldo_pendiente': resultado.get('total_bs', 0) if credito else 0
                     }
                     img_bytes = generar_recibo_profesional(datos_recibo)
                     st.image(img_bytes, caption="Recibo de venta")
@@ -364,43 +361,52 @@ elif opcion == "💳 Créditos":
             st.subheader(f"📋 Créditos Pendientes ({len(creditos)})")
             
             for credito in creditos:
-                with st.expander(f"📄 Venta #{credito.get('id_venta')} - {credito.get('cliente_nombre', 'N/A')}"):
+                with st.expander(f"📄 Venta #{credito.get('id')} - {credito.get('nombre', 'N/A')}"):
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.metric("Total", f"Bs {credito.get('total_venta', 0):,.2f}")
+                        st.metric("Total Original", f"Bs {credito.get('total_original', 0):,.2f}")
                         st.metric("Saldo Pendiente", f"Bs {credito.get('saldo_pendiente', 0):,.2f}")
                         st.metric("Fecha Venta", credito.get('fecha_venta', 'N/A')[:10] if credito.get('fecha_venta') else 'N/A')
                     
                     with col2:
                         st.metric("Tasa Venta", f"Bs {credito.get('tasa_venta', 0):,.2f}")
                         st.metric("Tasa Actual", f"Bs {credito.get('tasa_actual', 0):,.2f}")
-                        st.metric("Días de Retraso", credito.get('dias_retraso', 0))
+                        dias = credito.get('dias_retraso', 0)
+                        if dias > 0:
+                            st.metric("Días de Retraso", f"🔴 {dias} días")
+                        else:
+                            st.metric("Estado", "🟢 Al día")
+                    
+                    st.markdown(f"**Productos:** {credito.get('productos', 'N/A')}")
                     
                     st.subheader("💰 Registrar Pago")
+                    
                     monto_pago = st.number_input(
                         "Monto a pagar",
                         min_value=0.0,
-                        max_value=float(credito.get('saldo_pendiente', 0)),
+                        max_value=float(credito.get('saldo_pendiente', 0)) if credito.get('saldo_pendiente', 0) > 0 else 0.0,
                         step=100.0,
-                        key=f"monto_{credito.get('id_venta')}"
+                        key=f"monto_{credito.get('id')}"
                     )
-                    observacion = st.text_input("Observación", key=f"obs_{credito.get('id_venta')}")
+                    observacion = st.text_input("Observación", key=f"obs_{credito.get('id')}")
                     
                     col_btn1, col_btn2 = st.columns(2)
                     with col_btn1:
-                        if st.button(f"Pagar Parcial", key=f"parcial_{credito.get('id_venta')}"):
+                        if st.button(f"Pagar Parcial", key=f"parcial_{credito.get('id')}"):
                             if monto_pago > 0:
-                                resultado = pagar_credito_parcial(credito.get('id_venta'), monto_pago, observacion)
+                                resultado = pagar_credito_parcial(credito.get('id'), monto_pago, observacion)
                                 if resultado.get('success'):
                                     st.success(f"✅ {resultado.get('mensaje', 'Pago registrado')}")
                                     st.rerun()
                                 else:
                                     st.error(f"❌ Error: {resultado.get('error')}")
+                            else:
+                                st.warning("Ingrese un monto válido")
                     
                     with col_btn2:
-                        if st.button(f"Pagar Completo", key=f"completo_{credito.get('id_venta')}"):
-                            resultado = pagar_credito(credito.get('id_venta'))
+                        if st.button(f"Pagar Completo", key=f"completo_{credito.get('id')}"):
+                            resultado = pagar_credito(credito.get('id'))
                             if resultado.get('success'):
                                 st.success(f"✅ Crédito pagado completamente")
                                 st.rerun()
@@ -411,6 +417,7 @@ elif opcion == "💳 Créditos":
     
     except Exception as e:
         st.error(f"Error cargando créditos: {e}")
+        st.code(traceback.format_exc())
 
 # ========== REPORTES ==========
 elif opcion == "📊 Reportes":
@@ -418,24 +425,29 @@ elif opcion == "📊 Reportes":
     
     tipo_reporte = st.selectbox(
         "Tipo de Reporte",
-        ["📈 Ventas por período", "🏆 Productos más vendidos", "💳 Estado de créditos", "📋 Reporte general"]
+        ["📈 Ventas por período", "🏆 Productos más vendidos", "💳 Estado de créditos", "📋 Reporte general de ventas"]
     )
     
     if tipo_reporte == "📈 Ventas por período":
         st.subheader("Reporte por Rango de Fechas")
         
-        fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=30))
-        fecha_fin = st.date_input("Fecha fin", datetime.now())
+        col1, col2 = st.columns(2)
+        with col1:
+            fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=30))
+        with col2:
+            fecha_fin = st.date_input("Fecha fin", datetime.now())
+        
         tipo = st.selectbox("Agrupar por", ["dia", "semana", "mes"])
         filtro_venta = st.selectbox("Tipo de venta", ["todas", "contado", "credito_pendiente", "credito_pagado"])
         
-        if st.button("Generar Reporte"):
-            resultado = reporte_por_rango(
-                fecha_inicio.strftime('%Y-%m-%d'),
-                fecha_fin.strftime('%Y-%m-%d'),
-                tipo,
-                filtro_venta
-            )
+        if st.button("Generar Reporte", type="primary"):
+            with st.spinner("Generando reporte..."):
+                resultado = reporte_por_rango(
+                    fecha_inicio.strftime('%Y-%m-%d'),
+                    fecha_fin.strftime('%Y-%m-%d'),
+                    tipo,
+                    filtro_venta
+                )
             
             if resultado.get('success') and resultado.get('data'):
                 df = pd.DataFrame(resultado['data'])
@@ -448,22 +460,32 @@ elif opcion == "📊 Reportes":
                 col2.metric("Crédito Pendiente", f"Bs {totales.get('credito_pendiente', 0):,.2f}")
                 col3.metric("Crédito Cancelado", f"Bs {totales.get('credito_cancelado', 0):,.2f}")
                 col4.metric("Total General", f"Bs {totales.get('general', 0):,.2f}")
+            else:
+                st.warning("No hay datos en el período seleccionado")
     
     elif tipo_reporte == "🏆 Productos más vendidos":
-        st.subheader("Productos Más Vendidos")
+        st.subheader("Top Productos Más Vendidos")
         
-        reporte = reporte_produto()
+        with st.spinner("Cargando reporte..."):
+            reporte = reporte_produto()
+        
         if reporte:
             df = pd.DataFrame(reporte)
             st.dataframe(df, use_container_width=True)
-            st.bar_chart(df.set_index('producto')['unidades_vendidas'])
+            
+            total_unidades = df['unidades_vendidas'].sum()
+            total_bs = df['total_bs'].sum()
+            st.metric("Total Unidades Vendidas", f"{total_unidades:,}")
+            st.metric("Total Ventas (Bs)", f"Bs {total_bs:,.2f}")
         else:
-            st.info("No hay datos")
+            st.info("No hay datos de productos vendidos")
     
     elif tipo_reporte == "💳 Estado de créditos":
         st.subheader("Estado de Créditos")
         
-        creditos = ventas_con_retraso()
+        with st.spinner("Cargando créditos..."):
+            creditos = ventas_con_retraso()
+        
         if creditos:
             df = pd.DataFrame(creditos)
             st.dataframe(df, use_container_width=True)
@@ -471,19 +493,21 @@ elif opcion == "📊 Reportes":
             total_deuda = sum(c.get('saldo_pendiente', 0) for c in creditos)
             st.metric("Total Deuda Pendiente", f"Bs {total_deuda:,.2f}")
         else:
-            st.info("No hay créditos")
+            st.info("No hay créditos registrados")
     
-    elif tipo_reporte == "📋 Reporte general":
+    elif tipo_reporte == "📋 Reporte general de ventas":
         st.subheader("Reporte General de Ventas")
         
         periodo = st.selectbox("Período", ["semanal", "mensual"])
         
-        reporte = reporte_ventas(periodo)
+        with st.spinner("Generando reporte..."):
+            reporte = reporte_ventas(periodo)
+        
         if reporte:
             df = pd.DataFrame(reporte)
             st.dataframe(df, use_container_width=True)
         else:
-            st.info("No hay datos")
+            st.info("No hay datos de ventas")
 
 # Footer
 st.sidebar.markdown("---")
