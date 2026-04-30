@@ -77,19 +77,15 @@ if opcion == "🏠 Dashboard":
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Total ventas hoy
         cursor.execute("SELECT COALESCE(SUM(total), 0) FROM ventas WHERE DATE(fecha_venta) = CURRENT_DATE")
         ventas_hoy = cursor.fetchone()[0] or 0
         
-        # Total clientes
         clientes = get_clients()
         total_clientes = len(clientes)
         
-        # Total productos
         productos = get_productos()
         total_productos = len(productos)
         
-        # Créditos pendientes
         cursor.execute("SELECT COALESCE(SUM(saldo_pendiente), 0) FROM ventas WHERE credito = true AND pagado = false AND cancelada = false")
         creditos_pendientes = cursor.fetchone()[0] or 0
         
@@ -100,7 +96,6 @@ if opcion == "🏠 Dashboard":
         col3.metric("📦 Productos", total_productos)
         col4.metric("💳 Créditos Pendientes", f"Bs {creditos_pendientes:,.2f}")
         
-        # Últimas ventas
         st.subheader("📊 Últimas Ventas")
         conn = get_connection()
         cursor = conn.cursor()
@@ -129,7 +124,6 @@ if opcion == "🏠 Dashboard":
 elif opcion == "🛍️ Registrar Venta":
     st.header("🛍️ Nueva Venta")
     
-    # Inicializar carrito en sesión
     if 'carrito' not in st.session_state:
         st.session_state.carrito = []
     
@@ -144,7 +138,6 @@ elif opcion == "🛍️ Registrar Venta":
         cliente_seleccionado = None
         
         if buscar_cliente:
-            # Buscar por teléfono primero
             cliente = buscar_cliente_por_telefono(buscar_cliente)
             if not cliente:
                 clientes = buscar_cliente_por_nombre(buscar_cliente)
@@ -222,7 +215,6 @@ elif opcion == "🛍️ Registrar Venta":
                 st.session_state.carrito = []
                 st.rerun()
     
-    # Registrar venta
     credito = st.checkbox("Venta a crédito")
     
     if st.button("✅ Registrar Venta", type="primary", use_container_width=True):
@@ -249,7 +241,6 @@ elif opcion == "🛍️ Registrar Venta":
                 st.info(f"**Total:** Bs {resultado.get('total_bs', 0):,.2f}")
                 st.info(f"**Tipo:** {'Crédito' if credito else 'Contado'}")
                 
-                # Generar recibo
                 try:
                     datos_recibo = {
                         'cliente': cliente_seleccionado['nombre'] if cliente_seleccionado else 'Cliente',
@@ -351,7 +342,6 @@ elif opcion == "📦 Productos":
                 st.error("La descripción es requerida")
 
 # ========== CRÉDITOS ==========
-# ========== CRÉDITOS ==========
 elif opcion == "💳 Créditos":
     st.header("💳 Gestión de Créditos")
     
@@ -361,8 +351,7 @@ elif opcion == "💳 Créditos":
         if creditos:
             st.subheader(f"📋 Créditos Pendientes ({len(creditos)})")
             
-            for idx, credito in enumerate(creditos):  # Usar índice para keys únicas
-                # Obtener el ID correctamente (puede ser 'id' o 'id_venta')
+            for idx, credito in enumerate(creditos):
                 credito_id = credito.get('id_venta') or credito.get('id')
                 
                 if credito_id is None:
@@ -400,7 +389,7 @@ elif opcion == "💳 Créditos":
                         min_value=0.0,
                         max_value=saldo if saldo > 0 else 0.0,
                         step=100.0,
-                        key=f"monto_{credito_id}_{idx}"  # Key única usando índice
+                        key=f"monto_{credito_id}_{idx}"
                     )
                     observacion = st.text_input("Observación", key=f"obs_{credito_id}_{idx}")
                     
@@ -431,6 +420,121 @@ elif opcion == "💳 Créditos":
     except Exception as e:
         st.error(f"Error cargando créditos: {e}")
         st.code(traceback.format_exc())
+
+# ========== REPORTES ==========
+elif opcion == "📊 Reportes":
+    st.header("📊 Reportes y Estadísticas")
+    
+    tipo_reporte = st.radio(
+        "Seleccione el tipo de reporte",
+        ["📈 Ventas por período", "🏆 Productos más vendidos", "💳 Estado de créditos"],
+        horizontal=True
+    )
+    
+    # ========== REPORTE 1: VENTAS POR PERÍODO ==========
+    if tipo_reporte == "📈 Ventas por período":
+        st.subheader("Reporte de Ventas por Rango de Fechas")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=30))
+        with col2:
+            fecha_fin = st.date_input("Fecha fin", datetime.now())
+        
+        tipo = st.selectbox("Agrupar por", ["dia", "semana", "mes"])
+        filtro_venta = st.selectbox("Tipo de venta", ["todas", "contado", "credito_pendiente", "credito_pagado"])
+        
+        if st.button("🔍 Generar Reporte", type="primary"):
+            with st.spinner("Generando reporte..."):
+                try:
+                    resultado = reporte_por_rango(
+                        fecha_inicio.strftime('%Y-%m-%d'),
+                        fecha_fin.strftime('%Y-%m-%d'),
+                        tipo,
+                        filtro_venta
+                    )
+                    
+                    if resultado.get('success') and resultado.get('data'):
+                        df = pd.DataFrame(resultado['data'])
+                        st.dataframe(df, use_container_width=True)
+                        
+                        st.subheader("💰 Totales del Período")
+                        totales = resultado.get('totales', {})
+                        
+                        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+                        col_t1.metric("Ventas de Contado", f"Bs {totales.get('contado', 0):,.2f}")
+                        col_t2.metric("Créditos Pendientes", f"Bs {totales.get('credito_pendiente', 0):,.2f}")
+                        col_t3.metric("Créditos Cancelados", f"Bs {totales.get('credito_cancelado', 0):,.2f}")
+                        col_t4.metric("TOTAL GENERAL", f"Bs {totales.get('general', 0):,.2f}")
+                    else:
+                        st.warning("No hay datos en el período seleccionado")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    
+    # ========== REPORTE 2: PRODUCTOS MÁS VENDIDOS ==========
+    elif tipo_reporte == "🏆 Productos más vendidos":
+        st.subheader("Top Productos Más Vendidos")
+        
+        if st.button("🔍 Ver Reporte", type="primary"):
+            with st.spinner("Cargando datos..."):
+                try:
+                    reporte = reporte_produto()
+                    
+                    if reporte and len(reporte) > 0:
+                        df = pd.DataFrame(reporte)
+                        st.dataframe(df, use_container_width=True)
+                        
+                        total_unidades = df['unidades_vendidas'].sum() if 'unidades_vendidas' in df.columns else 0
+                        total_bs = df['total_bs'].sum() if 'total_bs' in df.columns else 0
+                        
+                        col1, col2 = st.columns(2)
+                        col1.metric("Total Unidades Vendidas", f"{int(total_unidades):,}")
+                        col2.metric("Total Ventas (Bs)", f"Bs {total_bs:,.2f}")
+                        
+                        # Gráfico simple
+                        if 'producto' in df.columns and 'unidades_vendidas' in df.columns:
+                            st.subheader("📊 Gráfico de Ventas por Producto")
+                            st.bar_chart(df.set_index('producto')['unidades_vendidas'].head(10))
+                    else:
+                        st.info("No hay datos de productos vendidos")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    
+    # ========== REPORTE 3: ESTADO DE CRÉDITOS ==========
+    elif tipo_reporte == "💳 Estado de créditos":
+        st.subheader("Estado de Créditos Pendientes")
+        
+        if st.button("🔍 Ver Reporte", type="primary"):
+            with st.spinner("Cargando créditos..."):
+                try:
+                    creditos = ventas_con_retraso()
+                    
+                    if creditos and len(creditos) > 0:
+                        df = pd.DataFrame(creditos)
+                        
+                        # Seleccionar columnas relevantes
+                        columnas_mostrar = ['id_venta', 'cliente_nombre', 'total_venta', 'saldo_pendiente', 'dias_retraso', 'porcentaje_pagado']
+                        columnas_existentes = [col for col in columnas_mostrar if col in df.columns]
+                        
+                        if columnas_existentes:
+                            st.dataframe(df[columnas_existentes], use_container_width=True)
+                        else:
+                            st.dataframe(df, use_container_width=True)
+                        
+                        total_deuda = df['saldo_pendiente'].sum() if 'saldo_pendiente' in df.columns else 0
+                        st.metric("Total Deuda Pendiente", f"Bs {total_deuda:,.2f}")
+                        
+                        # Mostrar resumen por cliente
+                        if 'cliente_nombre' in df.columns and 'saldo_pendiente' in df.columns:
+                            st.subheader("Resumen por Cliente")
+                            resumen_cliente = df.groupby('cliente_nombre')['saldo_pendiente'].sum().sort_values(ascending=False).reset_index()
+                            resumen_cliente.columns = ['Cliente', 'Deuda Total']
+                            st.dataframe(resumen_cliente, use_container_width=True)
+                    else:
+                        st.info("🎉 No hay créditos pendientes")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
 # Footer
 st.sidebar.markdown("---")
-st.sidebar.caption(f"© 2024 Sistema de Ventas\n{datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.sidebar.caption(f"© 2026 Sistema de Ventas\n{datetime.now().strftime('%d/%m/%Y %H:%M')}")
