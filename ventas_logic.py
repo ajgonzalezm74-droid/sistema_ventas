@@ -618,127 +618,171 @@ def cancelar_creditos_global(cliente_id, tasa_actual=None):
 # ========== REPORTES ==========
 
 def reporte_ventas(periodo="semanal"):
-    """Genera reporte de ventas por período"""
+    """Genera reporte de ventas por período - VERSIÓN SIMPLIFICADA Y FUNCIONAL"""
     try:
         conn = get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
         
         if periodo == "semanal":
             cursor.execute("""
                 SELECT 
-                    TO_CHAR(MIN(fecha_venta), 'DD/MM/YYYY') || ' - ' || TO_CHAR(MAX(fecha_venta), 'DD/MM/YYYY') as periodo,
+                    TO_CHAR(DATE_TRUNC('week', fecha_venta), 'DD/MM/YYYY') || ' - ' || 
+                    TO_CHAR(DATE_TRUNC('week', fecha_venta) + INTERVAL '6 days', 'DD/MM/YYYY') as periodo,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(total), 0) as total_bs,
-                    COALESCE(SUM(CASE WHEN credito = FALSE THEN total ELSE 0 END), 0) as total_contado,
-                    COALESCE(SUM(CASE WHEN credito = TRUE THEN total ELSE 0 END), 0) as total_credito
+                    COALESCE(SUM(total), 0) as total_bs
                 FROM ventas 
                 WHERE cancelada = FALSE
-                GROUP BY EXTRACT(YEAR FROM fecha_venta), EXTRACT(WEEK FROM fecha_venta)
-                ORDER BY MIN(fecha_venta) DESC
+                GROUP BY DATE_TRUNC('week', fecha_venta)
+                ORDER BY DATE_TRUNC('week', fecha_venta) DESC
                 LIMIT 10
             """)
-        elif periodo == "mensual":
+        else:  # mensual
             cursor.execute("""
                 SELECT 
-                    TO_CHAR(fecha_venta, 'MM/YYYY') as periodo,
+                    TO_CHAR(DATE_TRUNC('month', fecha_venta), 'MM/YYYY') as periodo,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(total), 0) as total_bs,
-                    COALESCE(SUM(CASE WHEN credito = FALSE THEN total ELSE 0 END), 0) as total_contado,
-                    COALESCE(SUM(CASE WHEN credito = TRUE THEN total ELSE 0 END), 0) as total_credito
+                    COALESCE(SUM(total), 0) as total_bs
                 FROM ventas 
                 WHERE cancelada = FALSE
-                GROUP BY TO_CHAR(fecha_venta, 'YYYY-MM'), TO_CHAR(fecha_venta, 'MM/YYYY')
-                ORDER BY MIN(fecha_venta) DESC
+                GROUP BY DATE_TRUNC('month', fecha_venta)
+                ORDER BY DATE_TRUNC('month', fecha_venta) DESC
                 LIMIT 12
             """)
-        elif periodo == "productos":
-            cursor.execute("""
-                SELECT 
-                    p.descripcion as producto,
-                    SUM(dv.cantidad) as unidades_vendidas,
-                    COALESCE(SUM(dv.subtotal), 0) as total_bs
-                FROM detalles_venta dv
-                JOIN productos p ON dv.id_producto = p.id
-                JOIN ventas v ON dv.id_venta = v.id
-                WHERE v.cancelada = FALSE
-                GROUP BY p.id, p.descripcion
-                ORDER BY total_bs DESC
-                LIMIT 20
-            """)
         
-        reportes = cursor.fetchall()
+        resultados = cursor.fetchall()
         conn.close()
-        return [dict(row) for row in reportes]
+        
+        if not resultados:
+            return []
+        
+        return [
+            {
+                'periodo': row[0],
+                'total_ventas': int(row[1]) if row[1] else 0,
+                'total_bs': float(row[2]) if row[2] else 0
+            }
+            for row in resultados
+        ]
+        
     except Exception as e:
         print(f"Error en reporte_ventas: {e}")
         return []
 
 
 def reporte_produto():
-    """Reporte de productos más vendidos"""
-    return reporte_ventas("productos")
+    """Reporte de productos más vendidos - VERSIÓN SIMPLIFICADA Y FUNCIONAL"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                p.descripcion as producto,
+                COALESCE(SUM(dv.cantidad), 0) as unidades_vendidas,
+                COALESCE(SUM(dv.subtotal), 0) as total_bs
+            FROM detalles_venta dv
+            JOIN productos p ON dv.id_producto = p.id
+            JOIN ventas v ON dv.id_venta = v.id
+            WHERE v.cancelada = FALSE
+            GROUP BY p.id, p.descripcion
+            ORDER BY unidades_vendidas DESC
+            LIMIT 20
+        """)
+        
+        resultados = cursor.fetchall()
+        conn.close()
+        
+        if not resultados:
+            return []
+        
+        return [
+            {
+                'producto': row[0],
+                'unidades_vendidas': int(row[1]) if row[1] else 0,
+                'total_bs': float(row[2]) if row[2] else 0
+            }
+            for row in resultados
+        ]
+        
+    except Exception as e:
+        print(f"Error en reporte_produto: {e}")
+        return []
 
 
 def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas"):
-    """Genera reporte por rango de fechas"""
+    """Genera reporte por rango de fechas - VERSIÓN SIMPLIFICADA Y FUNCIONAL"""
     try:
         conn = get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
         
-        filtro_sql = ""
-        params = [fecha_inicio, fecha_fin]
-        
+        # Construir la consulta según el filtro
         if filtro_venta == "contado":
-            filtro_sql = "AND v.credito = FALSE"
-        elif filtro_venta == "credito_pendiente":
-            filtro_sql = "AND v.credito = TRUE AND v.pagado = FALSE"
-        elif filtro_venta == "credito_pagado":
-            filtro_sql = "AND v.credito = TRUE AND v.pagado = TRUE"
-        
-        if tipo == "dia":
-            cursor.execute(f"""
+            query = """
                 SELECT 
                     DATE(v.fecha_venta) as fecha,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(CASE WHEN v.credito = FALSE THEN v.total ELSE 0 END), 0) as total_contado,
-                    COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = FALSE THEN v.total ELSE 0 END), 0) as total_credito_pendiente,
-                    COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = TRUE THEN v.total ELSE 0 END), 0) as total_credito_cancelado,
                     COALESCE(SUM(v.total), 0) as total_bs
                 FROM ventas v
-                WHERE v.cancelada = FALSE AND DATE(v.fecha_venta) BETWEEN %s AND %s {filtro_sql}
+                WHERE v.cancelada = FALSE 
+                    AND v.credito = FALSE
+                    AND DATE(v.fecha_venta) BETWEEN %s AND %s
                 GROUP BY DATE(v.fecha_venta)
                 ORDER BY fecha ASC
-            """, params)
+            """
+            params = [fecha_inicio, fecha_fin]
+            tipo_reporte = "contado"
             
-        elif tipo == "productos":
-            cursor.execute(f"""
+        elif filtro_venta == "credito_pendiente":
+            query = """
                 SELECT 
-                    p.descripcion as producto,
-                    CAST(SUM(dv.cantidad) AS INTEGER) as unidades_vendidas,
-                    COALESCE(SUM(CASE WHEN v.credito = FALSE THEN dv.subtotal ELSE 0 END), 0) as total_contado,
-                    COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = FALSE THEN dv.subtotal ELSE 0 END), 0) as total_credito_pendiente,
-                    COALESCE(SUM(CASE WHEN v.credito = TRUE AND v.pagado = TRUE THEN dv.subtotal ELSE 0 END), 0) as total_credito_cancelado,
-                    COALESCE(SUM(dv.subtotal), 0) as total_bs
-                FROM detalles_venta dv
-                JOIN productos p ON dv.id_producto = p.id
-                JOIN ventas v ON dv.id_venta = v.id
-                WHERE v.cancelada = FALSE AND DATE(v.fecha_venta) BETWEEN %s AND %s {filtro_sql}
-                GROUP BY p.id, p.descripcion
-                ORDER BY unidades_vendidas DESC
-            """, params)
-            
-        else:
-            cursor.execute(f"""
-                SELECT 
-                    DATE_TRUNC('day', v.fecha_venta) as fecha,
+                    DATE(v.fecha_venta) as fecha,
                     COUNT(*) as total_ventas,
                     COALESCE(SUM(v.total), 0) as total_bs
                 FROM ventas v
-                WHERE v.cancelada = FALSE AND DATE(v.fecha_venta) BETWEEN %s AND %s {filtro_sql}
-                GROUP BY DATE_TRUNC('day', v.fecha_venta)
+                WHERE v.cancelada = FALSE 
+                    AND v.credito = TRUE 
+                    AND v.pagado = FALSE
+                    AND DATE(v.fecha_venta) BETWEEN %s AND %s
+                GROUP BY DATE(v.fecha_venta)
                 ORDER BY fecha ASC
-            """, params)
+            """
+            params = [fecha_inicio, fecha_fin]
+            tipo_reporte = "credito_pendiente"
+            
+        elif filtro_venta == "credito_pagado":
+            query = """
+                SELECT 
+                    DATE(v.fecha_pago) as fecha,
+                    COUNT(*) as total_ventas,
+                    COALESCE(SUM(v.total), 0) as total_bs
+                FROM ventas v
+                WHERE v.cancelada = FALSE 
+                    AND v.credito = TRUE 
+                    AND v.pagado = TRUE
+                    AND DATE(v.fecha_pago) BETWEEN %s AND %s
+                GROUP BY DATE(v.fecha_pago)
+                ORDER BY fecha ASC
+            """
+            params = [fecha_inicio, fecha_fin]
+            tipo_reporte = "credito_pagado"
+            
+        else:  # "todas"
+            query = """
+                SELECT 
+                    DATE(v.fecha_venta) as fecha,
+                    COUNT(*) as total_ventas,
+                    COALESCE(SUM(v.total), 0) as total_bs,
+                    CASE WHEN v.credito = TRUE THEN 'credito' ELSE 'contado' END as tipo_venta
+                FROM ventas v
+                WHERE v.cancelada = FALSE
+                    AND DATE(v.fecha_venta) BETWEEN %s AND %s
+                GROUP BY DATE(v.fecha_venta), CASE WHEN v.credito = TRUE THEN 'credito' ELSE 'contado' END
+                ORDER BY fecha ASC
+            """
+            params = [fecha_inicio, fecha_fin]
+            tipo_reporte = "todas"
         
+        cursor.execute(query, params)
         resultados = cursor.fetchall()
         conn.close()
         
@@ -749,53 +793,63 @@ def reporte_por_rango(fecha_inicio, fecha_fin, tipo="dia", filtro_venta="todas")
                 'totales': {'contado': 0, 'credito_pendiente': 0, 'credito_cancelado': 0, 'general': 0}
             }
         
-        data = []
-        t_contado, t_pendiente, t_cancelado, t_general = 0, 0, 0, 0
+        # Organizar datos
+        fechas_dict = {}
         
         for row in resultados:
-            if tipo == "productos":
-                item = {
-                    'producto': row['producto'],
-                    'unidades_vendidas': int(row['unidades_vendidas']),
-                    'total_contado': float(row['total_contado']),
-                    'total_credito_pendiente': float(row['total_credito_pendiente']),
-                    'total_credito_cancelado': float(row['total_credito_cancelado']),
-                    'total_bs': float(row['total_bs'])
-                }
-            else:
-                if tipo == "dia" and 'fecha' in row:
-                    periodo = row['fecha'].strftime('%d/%m/%Y') if hasattr(row['fecha'], 'strftime') else str(row['fecha'])
-                else:
-                    periodo = row['fecha'].strftime('%d/%m/%Y') if hasattr(row['fecha'], 'strftime') else str(row['fecha'])
-                
-                item = {
-                    'periodo': periodo,
-                    'ventas': row['total_ventas'],
-                    'contado': float(row.get('total_contado', 0)) if 'total_contado' in row else 0,
-                    'credito_pendiente': float(row.get('total_credito_pendiente', 0)) if 'total_credito_pendiente' in row else 0,
-                    'credito_cancelado': float(row.get('total_credito_cancelado', 0)) if 'total_credito_cancelado' in row else 0,
-                    'total': float(row.get('total_bs', 0))
+            fecha = row[0]
+            fecha_str = fecha.strftime('%d/%m/%Y')
+            total_bs = float(row[2]) if row[2] else 0
+            total_ventas = int(row[1]) if row[1] else 0
+            
+            if fecha_str not in fechas_dict:
+                fechas_dict[fecha_str] = {
+                    'periodo': fecha_str,
+                    'ventas': 0,
+                    'contado': 0,
+                    'credito_pendiente': 0,
+                    'credito_cancelado': 0,
+                    'total': 0
                 }
             
-            data.append(item)
-            t_contado += float(row.get('total_contado', 0))
-            t_pendiente += float(row.get('total_credito_pendiente', 0))
-            t_cancelado += float(row.get('total_credito_cancelado', 0))
-            t_general += float(row.get('total_bs', 0))
+            fechas_dict[fecha_str]['ventas'] += total_ventas
+            
+            if tipo_reporte == "contado":
+                fechas_dict[fecha_str]['contado'] += total_bs
+            elif tipo_reporte == "credito_pendiente":
+                fechas_dict[fecha_str]['credito_pendiente'] += total_bs
+            elif tipo_reporte == "credito_pagado":
+                fechas_dict[fecha_str]['credito_cancelado'] += total_bs
+            else:  # "todas"
+                tipo_venta = row[3] if len(row) > 3 else ''
+                if tipo_venta == 'credito':
+                    fechas_dict[fecha_str]['credito_pendiente'] += total_bs
+                else:
+                    fechas_dict[fecha_str]['contado'] += total_bs
+            
+            fechas_dict[fecha_str]['total'] += total_bs
+        
+        # Convertir a lista ordenada
+        data = sorted(fechas_dict.values(), key=lambda x: x['periodo'])
+        
+        # Calcular totales
+        totales = {
+            'contado': sum(d['contado'] for d in data),
+            'credito_pendiente': sum(d['credito_pendiente'] for d in data),
+            'credito_cancelado': sum(d['credito_cancelado'] for d in data),
+            'general': sum(d['total'] for d in data)
+        }
         
         return {
             'success': True,
             'data': data,
-            'totales': {
-                'contado': t_contado,
-                'credito_pendiente': t_pendiente,
-                'credito_cancelado': t_cancelado,
-                'general': t_general
-            }
+            'totales': totales
         }
         
     except Exception as e:
         print(f"Error en reporte_por_rango: {e}")
+        import traceback
+        traceback.print_exc()
         return {'success': False, 'error': str(e), 'data': []}
 
 
