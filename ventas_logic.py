@@ -113,10 +113,17 @@ def registrar_venta(id_cliente, productos, es_credito=False, fecha_manual=None):
         else:
             fecha_venta = datetime.now()
         
-        cursor.execute("""
-            INSERT INTO ventas (id_cliente, total, tasa, credito, pagado, fecha_venta, saldo_pendiente) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-        """, (id_cliente, total_venta, tasa_bs, credito, pagado, fecha_venta, total_venta if es_credito else 0))
+        # Si es venta al contado, también se establece fecha_pago
+        if not es_credito:
+            cursor.execute("""
+                INSERT INTO ventas (id_cliente, total, tasa, credito, pagado, fecha_venta, fecha_pago, saldo_pendiente) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            """, (id_cliente, total_venta, tasa_bs, credito, pagado, fecha_venta, fecha_venta, 0))
+        else:
+            cursor.execute("""
+                INSERT INTO ventas (id_cliente, total, tasa, credito, pagado, fecha_venta, saldo_pendiente) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+            """, (id_cliente, total_venta, tasa_bs, credito, pagado, fecha_venta, total_venta))
         
         id_venta = cursor.fetchone()[0]
         
@@ -499,16 +506,30 @@ def ventas_con_retraso():
 
 
 def cancelar_creditos_global(cliente_id, tasa_actual=None):
-    """Cancela todas las deudas de un cliente"""
+    """Cancela TODAS las deudas de un cliente de una sola vez"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Obtener información del cliente
+        cursor.execute("SELECT nombre, telefono FROM clientes WHERE id = %s", (cliente_id,))
+        cliente_info = cursor.fetchone()
+        if not cliente_info:
+            conn.close()
+            return {"success": False, "error": "Cliente no encontrado"}
+        
+        cliente_nombre, cliente_telefono = cliente_info
+        
         # Obtener todas las deudas del cliente
         cursor.execute("""
-            SELECT id, total, tasa, saldo_pendiente
-            FROM ventas
-            WHERE id_cliente = %s AND credito = TRUE AND pagado = FALSE AND cancelada = FALSE
+            SELECT v.id, v.total, v.tasa, v.saldo_pendiente,
+                   COALESCE((SELECT SUM(monto_pagado) FROM pagos_credito WHERE id_venta = v.id), 0) as pagado_anterior,
+                   v.credito, v.pagado, v.cancelada
+            FROM ventas v
+            WHERE v.id_cliente = %s 
+            AND v.credito = TRUE 
+            AND v.pagado = FALSE 
+            AND v.cancelada = FALSE
         """, (cliente_id,))
         
         deudas = cursor.fetchall()
@@ -523,30 +544,59 @@ def cancelar_creditos_global(cliente_id, tasa_actual=None):
         
         total_cancelado = 0
         deudas_canceladas = []
+        ahora = datetime.now()
         
         for deuda in deudas:
-            id_venta, total_venta, tasa_venta, saldo_db = deuda
+            id_venta, total_venta, tasa_venta, saldo_db, pagado_anterior, credito, pagado, cancelada = deuda
             total_venta = float(total_venta)
             tasa_venta = float(tasa_venta) if tasa_venta else 55.0
+            pagado_anterior = float(pagado_anterior) if pagado_anterior else 0
             
+            # Calcular el monto a cancelar
             total_usd = total_venta / tasa_venta if tasa_venta > 0 else 0
-            monto_cancelar = total_usd * tasa_actual
+            total_actualizado = total_usd * tasa_actual
+            monto_cancelar = total_actualizado - pagado_anterior
             
-            # Registrar pago
+            if monto_cancelar <= 0:
+                continue
+            
+            # Obtener productos de la venta para el recibo
+            cursor_prod = conn.cursor()
+            cursor_prod.execute("""
+                SELECT p.descripcion, dv.cantidad
+                FROM detalles_venta dv
+                JOIN productos p ON dv.id_producto = p.id
+                WHERE dv.id_venta = %s
+            """, (id_venta,))
+            productos_venta = cursor_prod.fetchall()
+            cursor_prod.close()
+            
+            # Registrar pago global
             cursor.execute("""
                 INSERT INTO pagos_credito (id_venta, monto_pagado, tasa_pago, observacion, fecha_pago)
                 VALUES (%s, %s, %s, %s, %s)
-            """, (id_venta, monto_cancelar, tasa_actual, f"CANCELACIÓN GLOBAL - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", datetime.now()))
+            """, (id_venta, monto_cancelar, tasa_actual, 
+                  f"CANCELACIÓN GLOBAL - {ahora.strftime('%Y-%m-%d %H:%M:%S')}", 
+                  ahora))
             
-            # Actualizar venta
+            # Actualizar venta como pagada
             cursor.execute("""
                 UPDATE ventas
-                SET pagado = TRUE, saldo_pendiente = 0, fecha_pago = %s, pagado_parcial = FALSE
+                SET pagado = TRUE, 
+                    saldo_pendiente = 0, 
+                    fecha_pago = %s, 
+                    pagado_parcial = FALSE
                 WHERE id = %s
-            """, (datetime.now(), id_venta))
+            """, (ahora, id_venta))
             
             total_cancelado += monto_cancelar
-            deudas_canceladas.append({'id_venta': id_venta, 'total': monto_cancelar})
+            deudas_canceladas.append({
+                'id_venta': id_venta, 
+                'monto': monto_cancelar,
+                'total_original': total_venta,
+                'productos': [{'descripcion': p[0], 'cantidad': p[1]} for p in productos_venta],
+                'fecha_venta': fecha_venta
+            })
         
         conn.commit()
         conn.close()
@@ -555,7 +605,10 @@ def cancelar_creditos_global(cliente_id, tasa_actual=None):
             "success": True,
             "total_cancelado": total_cancelado,
             "deudas_canceladas": deudas_canceladas,
-            "tasa_aplicada": tasa_actual
+            "tasa_aplicada": tasa_actual,
+            "cliente_nombre": cliente_nombre,
+            "cliente_telefono": cliente_telefono,
+            "cantidad_deudas": len(deudas_canceladas)
         }
         
     except Exception as e:
@@ -575,7 +628,9 @@ def reporte_ventas(periodo="semanal"):
                 SELECT 
                     TO_CHAR(MIN(fecha_venta), 'DD/MM/YYYY') || ' - ' || TO_CHAR(MAX(fecha_venta), 'DD/MM/YYYY') as periodo,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(total), 0) as total_bs
+                    COALESCE(SUM(total), 0) as total_bs,
+                    COALESCE(SUM(CASE WHEN credito = FALSE THEN total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN credito = TRUE THEN total ELSE 0 END), 0) as total_credito
                 FROM ventas 
                 WHERE cancelada = FALSE
                 GROUP BY EXTRACT(YEAR FROM fecha_venta), EXTRACT(WEEK FROM fecha_venta)
@@ -587,7 +642,9 @@ def reporte_ventas(periodo="semanal"):
                 SELECT 
                     TO_CHAR(fecha_venta, 'MM/YYYY') as periodo,
                     COUNT(*) as total_ventas,
-                    COALESCE(SUM(total), 0) as total_bs
+                    COALESCE(SUM(total), 0) as total_bs,
+                    COALESCE(SUM(CASE WHEN credito = FALSE THEN total ELSE 0 END), 0) as total_contado,
+                    COALESCE(SUM(CASE WHEN credito = TRUE THEN total ELSE 0 END), 0) as total_credito
                 FROM ventas 
                 WHERE cancelada = FALSE
                 GROUP BY TO_CHAR(fecha_venta, 'YYYY-MM'), TO_CHAR(fecha_venta, 'MM/YYYY')
@@ -875,3 +932,56 @@ def registrar_venta_simple(id_cliente, id_producto, cantidad, es_credito=False):
     """Registra una venta simple de un solo producto"""
     productos = [{"id_producto": id_producto, "cantidad": cantidad}]
     return registrar_venta(id_cliente, productos, es_credito)
+
+
+# ========== FUNCIÓN PARA CALCULAR DEUDA DE CLIENTE ==========
+
+def calcular_deuda_cliente(cliente_id):
+    """Calcula la deuda total actualizada de un cliente"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Obtener todas las deudas del cliente
+        cursor.execute("""
+            SELECT v.id, v.total, v.tasa, v.saldo_pendiente,
+                   COALESCE((SELECT SUM(monto_pagado) FROM pagos_credito WHERE id_venta = v.id), 0) as pagado_anterior
+            FROM ventas v
+            WHERE v.id_cliente = %s 
+            AND v.credito = TRUE 
+            AND v.pagado = FALSE 
+            AND v.cancelada = FALSE
+        """, (cliente_id,))
+        
+        deudas = cursor.fetchall()
+        
+        if not deudas:
+            conn.close()
+            return 0
+        
+        # Obtener tasa actual
+        tasas = exchange.get_all_rates(force_update=False)
+        tasa_actual = tasas.get("bcv_usd", 55.0)
+        
+        deuda_total = 0
+        
+        for deuda in deudas:
+            id_venta, total_venta, tasa_venta, saldo_db, pagado_anterior = deuda
+            total_venta = float(total_venta)
+            tasa_venta = float(tasa_venta) if tasa_venta else 55.0
+            pagado_anterior = float(pagado_anterior) if pagado_anterior else 0
+            
+            # Calcular deuda actualizada
+            total_usd = total_venta / tasa_venta if tasa_venta > 0 else 0
+            total_actualizado = total_usd * tasa_actual
+            deuda_actual = total_actualizado - pagado_anterior
+            
+            if deuda_actual > 0:
+                deuda_total += deuda_actual
+        
+        conn.close()
+        return deuda_total
+        
+    except Exception as e:
+        print(f"Error calculando deuda del cliente: {e}")
+        return 0
