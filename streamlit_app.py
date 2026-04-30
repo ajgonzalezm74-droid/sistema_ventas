@@ -386,33 +386,75 @@ elif opcion == "💳 Créditos":
                 with st.expander(f"📄 Venta #{credito.get('id_venta')} - {credito.get('cliente_nombre', 'N/A')}"):
                     col1, col2, col3 = st.columns(3)
                     
+                    # Obtener valores con manejo seguro
+                    total_venta = float(credito.get('total_venta', 0))
+                    saldo_pendiente = float(credito.get('saldo_pendiente', 0))
+                    total_pagado = float(credito.get('total_pagado', 0))
+                    total_actualizado = float(credito.get('total_actualizado', total_venta))
+                    
+                    # Asegurar que saldo_pendiente no sea negativo
+                    if saldo_pendiente < 0:
+                        saldo_pendiente = 0
+                    
+                    # Calcular porcentaje pagado de forma segura
+                    if total_actualizado > 0:
+                        porcentaje_pagado = (total_pagado / total_actualizado) * 100
+                        # Limitar entre 0 y 100
+                        if porcentaje_pagado < 0:
+                            porcentaje_pagado = 0
+                        if porcentaje_pagado > 100:
+                            porcentaje_pagado = 100
+                    else:
+                        porcentaje_pagado = 0
+                    
+                    # Valor para progress bar (DEBE estar entre 0 y 1)
+                    progress_value = porcentaje_pagado / 100
+                    # Validación EXTRA para asegurar que está en rango
+                    if progress_value < 0:
+                        progress_value = 0
+                    if progress_value > 1:
+                        progress_value = 1
+                    
                     with col1:
-                        st.metric("Total", f"Bs {credito.get('total_venta', 0):,.2f}")
-                        st.metric("Saldo Pendiente", f"Bs {credito.get('saldo_pendiente', 0):,.2f}")
+                        st.metric("Total Original", f"Bs {total_venta:,.2f}")
+                        st.metric("Saldo Pendiente", f"Bs {saldo_pendiente:,.2f}")
                     
                     with col2:
-                        st.metric("Fecha Venta", credito.get('fecha_venta', 'N/A')[:10])
-                        st.metric("Tasa", f"Bs {credito.get('tasa', 0):,.2f}")
+                        st.metric("Fecha Venta", credito.get('fecha_venta', 'N/A')[:10] if credito.get('fecha_venta') else 'N/A')
+                        st.metric("Tasa", f"Bs {credito.get('tasa_venta', 0):,.2f}")
                     
                     with col3:
-                        pagado = credito.get('total_venta', 0) - credito.get('saldo_pendiente', 0)
-                        porcentaje = (pagado / credito.get('total_venta', 1)) * 100
-                        st.metric("Pagado", f"Bs {pagado:,.2f}")
-                        st.progress(porcentaje / 100)
+                        st.metric("Pagado", f"Bs {total_pagado:,.2f}")
+                        # Mostrar progress bar SOLO si el valor es válido
+                        if 0 <= progress_value <= 1:
+                            st.progress(progress_value)
+                            st.caption(f"{porcentaje_pagado:.1f}% pagado")
+                        else:
+                            # Fallback: mostrar texto en lugar de progress bar
+                            st.warning(f"Progreso: {porcentaje_pagado:.1f}% pagado")
+                    
+                    # Mostrar advertencia si hay sobrepago
+                    if saldo_pendiente < 0 or total_pagado > total_actualizado:
+                        st.error(f"⚠️ Este crédito tiene un sobrepago de Bs {abs(min(0, saldo_pendiente)):,.2f}. Verificar historial de pagos.")
+                        monto_maximo = 0
+                    else:
+                        monto_maximo = saldo_pendiente
                     
                     # Formulario de pago
                     st.subheader("💰 Registrar Pago")
+                    
                     monto_pago = st.number_input(
-                        f"Monto a pagar", 
+                        f"Monto a pagar (Máximo: Bs {monto_maximo:,.2f})" if monto_maximo > 0 else "Monto a pagar (Crédito ya pagado)", 
                         min_value=0.0, 
-                        max_value=float(credito.get('saldo_pendiente', 0)),
+                        max_value=float(monto_maximo) if monto_maximo > 0 else 0.0,
                         step=100.0, 
-                        key=f"monto_{credito.get('id_venta')}"
+                        key=f"monto_{credito.get('id_venta')}",
+                        disabled=(monto_maximo <= 0)
                     )
                     observacion = st.text_input("Observación", key=f"obs_{credito.get('id_venta')}")
                     
-                    if st.button(f"Registrar Pago", key=f"btn_{credito.get('id_venta')}"):
-                        if monto_pago > 0:
+                    if st.button(f"Registrar Pago", key=f"btn_{credito.get('id_venta')}", disabled=(monto_maximo <= 0)):
+                        if monto_pago > 0 and monto_maximo > 0 and monto_pago <= monto_maximo:
                             with st.spinner("Procesando pago..."):
                                 resultado = pagar_credito_con_tasa(
                                     credito.get('id_venta'),
@@ -425,77 +467,16 @@ elif opcion == "💳 Créditos":
                                 st.rerun()
                             else:
                                 st.error(f"❌ Error: {resultado.get('error')}")
+                        elif monto_pago > 0 and monto_maximo > 0 and monto_pago > monto_maximo:
+                            st.warning(f"El monto excede el saldo pendiente. Máximo: Bs {monto_maximo:,.2f}")
                         else:
-                            st.warning("Ingrese un monto válido")
+                            st.warning("Ingrese un monto válido mayor a 0")
         else:
             st.info("🎉 No hay créditos pendientes")
     
     except Exception as e:
         st.error(f"Error cargando créditos: {e}")
         st.code(traceback.format_exc())
-
-# ========== REPORTES ==========
-elif opcion == "📊 Reportes":
-    st.header("📊 Reportes")
-    
-    tipo_reporte = st.selectbox(
-        "Tipo de Reporte",
-        ["📈 Ventas por período", "🏆 Productos más vendidos", "💳 Estado de créditos"]
-    )
-    
-    if tipo_reporte == "📈 Ventas por período":
-        fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=30))
-        fecha_fin = st.date_input("Fecha fin", datetime.now())
-        
-        if st.button("Generar Reporte"):
-            try:
-                conn = get_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT DATE(fecha_venta) as fecha, 
-                           COUNT(*) as cantidad,
-                           SUM(total) as total
-                    FROM ventas
-                    WHERE DATE(fecha_venta) BETWEEN %s AND %s
-                    GROUP BY DATE(fecha_venta)
-                    ORDER BY fecha DESC
-                """, (fecha_inicio, fecha_fin))
-                datos = cursor.fetchall()
-                conn.close()
-                
-                if datos:
-                    df = pd.DataFrame(datos, columns=['Fecha', 'Cantidad', 'Total'])
-                    st.dataframe(df, use_container_width=True)
-                    
-                    total_ventas = df['Total'].sum()
-                    st.metric("Total Ventas en el período", f"Bs {total_ventas:,.2f}")
-                else:
-                    st.info("No hay datos en el período seleccionado")
-            except Exception as e:
-                st.error(f"Error: {e}")
-    
-    elif tipo_reporte == "🏆 Productos más vendidos":
-        try:
-            reporte = reporte_produto()
-            if reporte:
-                df = pd.DataFrame(reporte)
-                st.dataframe(df, use_container_width=True)
-            else:
-                st.info("No hay datos de productos vendidos")
-        except Exception as e:
-            st.error(f"Error: {e}")
-    
-    elif tipo_reporte == "💳 Estado de créditos":
-        creditos = ventas_con_retraso()
-        if creditos:
-            df = pd.DataFrame(creditos)
-            st.dataframe(df, use_container_width=True)
-            
-            total_deuda = sum(c.get('saldo_pendiente', 0) for c in creditos)
-            st.metric("Total Deuda en Créditos", f"Bs {total_deuda:,.2f}")
-        else:
-            st.info("No hay créditos registrados")
-
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.caption(f"© 2024 Sistema de Ventas\n{datetime.now().strftime('%d/%m/%Y %H:%M')}")
