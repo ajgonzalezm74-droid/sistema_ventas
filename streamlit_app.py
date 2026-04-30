@@ -19,8 +19,12 @@ from ventas_logic import (
     ventas_con_retraso,
     obtener_tasa_actual,
     pagar_credito_con_tasa,
+    pagar_credito_parcial,
     reporte_ventas,
-    reporte_produto
+    reporte_produto,
+    reporte_por_rango,
+    obtener_creditos_agrupados,
+    cancelar_creditos_global
 )
 
 # IMPORTAR GENERADORES DE RECIBOS
@@ -100,7 +104,8 @@ if opcion == "🏠 Dashboard":
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT v.id, v.fecha_venta, c.nombre as cliente, v.total, v.credito
+            SELECT v.id, v.fecha_venta, c.nombre as cliente, v.total, 
+                   CASE WHEN v.credito = true THEN 'Crédito' ELSE 'Contado' END as tipo
             FROM ventas v
             JOIN clientes c ON v.id_cliente = c.id
             ORDER BY v.fecha_venta DESC
@@ -110,8 +115,8 @@ if opcion == "🏠 Dashboard":
         conn.close()
         
         if ultimas_ventas:
-            df = pd.DataFrame(ultimas_ventas, columns=['ID', 'Fecha', 'Cliente', 'Total', 'Crédito'])
-            df['Fecha'] = pd.to_datetime(df['Fecha']).dt.strftime('%d/%m/%Y')
+            df = pd.DataFrame(ultimas_ventas, columns=['ID', 'Fecha', 'Cliente', 'Total', 'Tipo'])
+            df['Fecha'] = pd.to_datetime(df['Fecha']).dt.strftime('%d/%m/%Y %H:%M')
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No hay ventas registradas")
@@ -313,12 +318,10 @@ elif opcion == "👥 Clientes":
     with tab3:
         busqueda = st.text_input("Buscar por nombre o teléfono")
         if busqueda:
-            # Buscar por teléfono
             cliente = buscar_cliente_por_telefono(busqueda)
             if cliente:
                 st.dataframe(pd.DataFrame([cliente]), use_container_width=True)
             else:
-                # Buscar por nombre
                 clientes = buscar_cliente_por_nombre(busqueda)
                 if clientes:
                     st.dataframe(pd.DataFrame(clientes), use_container_width=True)
@@ -376,107 +379,266 @@ elif opcion == "📦 Productos":
 elif opcion == "💳 Créditos":
     st.header("💳 Gestión de Créditos")
     
-    try:
-        creditos = ventas_con_retraso()
+    # Crear pestañas para créditos individuales y cancelación global
+    tab_creditos, tab_global = st.tabs(["📋 Créditos Individuales", "🌍 Cancelación Global por Cliente"])
+    
+    with tab_creditos:
+        try:
+            creditos = ventas_con_retraso()
+            
+            if creditos:
+                st.subheader(f"📋 Créditos Pendientes ({len(creditos)})")
+                
+                for credito in creditos:
+                    with st.expander(f"📄 Venta #{credito.get('id_venta')} - {credito.get('cliente_nombre', 'N/A')}"):
+                        col1, col2, col3 = st.columns(3)
+                        
+                        total_venta = float(credito.get('total_venta', 0))
+                        saldo_pendiente = float(credito.get('saldo_pendiente', 0))
+                        total_pagado = float(credito.get('total_pagado', 0))
+                        total_actualizado = float(credito.get('total_actualizado', total_venta))
+                        
+                        if saldo_pendiente < 0:
+                            saldo_pendiente = 0
+                        
+                        if total_actualizado > 0:
+                            porcentaje_pagado = (total_pagado / total_actualizado) * 100
+                            porcentaje_pagado = max(0, min(100, porcentaje_pagado))
+                        else:
+                            porcentaje_pagado = 0
+                        
+                        progress_value = porcentaje_pagado / 100
+                        progress_value = max(0, min(1, progress_value))
+                        
+                        with col1:
+                            st.metric("Total Original", f"Bs {total_venta:,.2f}")
+                            st.metric("Saldo Pendiente", f"Bs {saldo_pendiente:,.2f}")
+                        
+                        with col2:
+                            fecha_venta = credito.get('fecha_venta', 'N/A')
+                            if fecha_venta and len(fecha_venta) > 10:
+                                fecha_venta = fecha_venta[:10]
+                            st.metric("Fecha Venta", fecha_venta)
+                            st.metric("Tasa", f"Bs {credito.get('tasa_venta', 0):,.2f}")
+                        
+                        with col3:
+                            st.metric("Pagado", f"Bs {total_pagado:,.2f}")
+                            if 0 <= progress_value <= 1:
+                                st.progress(progress_value)
+                                st.caption(f"{porcentaje_pagado:.1f}% pagado")
+                        
+                        if saldo_pendiente <= 0:
+                            st.success("✅ Este crédito ya está completamente pagado")
+                        else:
+                            st.subheader("💰 Registrar Pago")
+                            monto_pago = st.number_input(
+                                f"Monto a pagar (Máximo: Bs {saldo_pendiente:,.2f})",
+                                min_value=0.0,
+                                max_value=float(saldo_pendiente),
+                                step=100.0,
+                                key=f"monto_{credito.get('id_venta')}"
+                            )
+                            observacion = st.text_input("Observación", key=f"obs_{credito.get('id_venta')}")
+                            
+                            if st.button(f"Registrar Pago", key=f"btn_{credito.get('id_venta')}"):
+                                if monto_pago > 0:
+                                    with st.spinner("Procesando pago..."):
+                                        resultado = pagar_credito_con_tasa(
+                                            credito.get('id_venta'),
+                                            monto_pago,
+                                            observacion or "Pago registrado",
+                                            tasa_actual.get('bcv_usd', 55.0)
+                                        )
+                                    if resultado.get('success'):
+                                        st.success(f"✅ {resultado.get('mensaje', 'Pago registrado')}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ Error: {resultado.get('error')}")
+                                else:
+                                    st.warning("Ingrese un monto válido")
+            else:
+                st.info("🎉 No hay créditos pendientes")
+        except Exception as e:
+            st.error(f"Error cargando créditos: {e}")
+            st.code(traceback.format_exc())
+    
+    with tab_global:
+        st.subheader("🌍 Cancelar TODAS las deudas de un cliente")
+        st.warning("⚠️ Esta acción cancelará TODOS los créditos pendientes del cliente seleccionado de una sola vez.")
+        
+        # Seleccionar cliente para cancelación global
+        clientes = get_clients()
+        if clientes:
+            cliente_seleccionado = st.selectbox(
+                "Seleccionar cliente",
+                clientes,
+                format_func=lambda x: f"{x['nombre']} - {x.get('telefono', 'Sin teléfono')} (Deuda: Bs {calcular_deuda_cliente(x['id']):,.2f})"
+            )
+            
+            if cliente_seleccionado:
+                cliente_id = cliente_seleccionado['id']
+                deuda_total = calcular_deuda_cliente(cliente_id)
+                
+                if deuda_total > 0:
+                    st.error(f"💰 Deuda total del cliente: **Bs {deuda_total:,.2f}**")
+                    st.warning(f"Se cancelarán todas las deudas de **{cliente_seleccionado['nombre']}**")
+                    
+                    # Botón de confirmación
+                    confirmar = st.checkbox("✅ Confirmo que deseo cancelar TODAS las deudas de este cliente")
+                    
+                    if st.button("🌍 Cancelar TODOS los Créditos", type="primary", disabled=not confirmar):
+                        with st.spinner("Procesando cancelación global..."):
+                            resultado = cancelar_creditos_global(cliente_id, tasa_actual.get('bcv_usd', 55.0))
+                        
+                        if resultado.get('success'):
+                            st.success(f"✅ Cancelación global completada exitosamente!")
+                            st.balloons()
+                            st.info(f"**Total cancelado:** Bs {resultado.get('total_cancelado', 0):,.2f}")
+                            st.info(f"**Deudas canceladas:** {len(resultado.get('deudas_canceladas', []))}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Error: {resultado.get('error')}")
+                else:
+                    st.success(f"✅ El cliente {cliente_seleccionado['nombre']} no tiene deudas pendientes")
+        else:
+            st.info("No hay clientes registrados")
+
+# ========== REPORTES ==========
+elif opcion == "📊 Reportes":
+    st.header("📊 Reportes y Estadísticas")
+    
+    tipo_reporte = st.selectbox(
+        "Tipo de Reporte",
+        ["📈 Ventas por período", "🏆 Productos más vendidos", "💳 Estado de créditos", "📋 Reporte general de ventas"]
+    )
+    
+    if tipo_reporte == "📈 Ventas por período":
+        st.subheader("Reporte de Ventas por Rango de Fechas")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=30))
+        with col2:
+            fecha_fin = st.date_input("Fecha fin", datetime.now())
+        
+        tipo_agrupacion = st.selectbox(
+            "Agrupar por",
+            ["dia", "semana", "mes"]
+        )
+        
+        filtro_venta = st.selectbox(
+            "Tipo de venta",
+            ["todas", "contado", "credito_pendiente", "credito_pagado"]
+        )
+        
+        if st.button("Generar Reporte", type="primary"):
+            with st.spinner("Generando reporte..."):
+                resultado = reporte_por_rango(
+                    fecha_inicio.strftime('%Y-%m-%d'),
+                    fecha_fin.strftime('%Y-%m-%d'),
+                    tipo_agrupacion,
+                    filtro_venta
+                )
+            
+            if resultado.get('success') and resultado.get('data'):
+                df = pd.DataFrame(resultado['data'])
+                st.dataframe(df, use_container_width=True)
+                
+                # Mostrar totales
+                st.subheader("📊 Totales")
+                totales = resultado.get('totales', {})
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Contado", f"Bs {totales.get('contado', 0):,.2f}")
+                col2.metric("Total Crédito Pendiente", f"Bs {totales.get('credito_pendiente', 0):,.2f}")
+                col3.metric("Total Crédito Cancelado", f"Bs {totales.get('credito_cancelado', 0):,.2f}")
+                col4.metric("Total General", f"Bs {totales.get('general', 0):,.2f}")
+            else:
+                st.warning("No hay datos en el período seleccionado")
+    
+    elif tipo_reporte == "🏆 Productos más vendidos":
+        st.subheader("Top Productos Más Vendidos")
+        
+        with st.spinner("Cargando reporte..."):
+            reporte = reporte_produto()
+        
+        if reporte:
+            df = pd.DataFrame(reporte)
+            st.dataframe(df, use_container_width=True)
+            
+            # Gráfico de barras
+            st.subheader("📊 Gráfico de Ventas por Producto")
+            st.bar_chart(df.set_index('producto')['unidades_vendidas'])
+            
+            # Total general
+            total_unidades = df['unidades_vendidas'].sum()
+            total_bs = df['total_bs'].sum()
+            st.metric("Total Unidades Vendidas", f"{total_unidades:,}")
+            st.metric("Total Ventas (Bs)", f"Bs {total_bs:,.2f}")
+        else:
+            st.info("No hay datos de productos vendidos")
+    
+    elif tipo_reporte == "💳 Estado de créditos":
+        st.subheader("Estado de Créditos")
+        
+        with st.spinner("Cargando créditos..."):
+            creditos = ventas_con_retraso()
         
         if creditos:
-            st.subheader(f"📋 Créditos Pendientes ({len(creditos)})")
+            df = pd.DataFrame(creditos)
+            st.dataframe(df, use_container_width=True)
             
-            for credito in creditos:
-                with st.expander(f"📄 Venta #{credito.get('id_venta')} - {credito.get('cliente_nombre', 'N/A')}"):
-                    col1, col2, col3 = st.columns(3)
-                    
-                    # Obtener valores con manejo seguro
-                    total_venta = float(credito.get('total_venta', 0))
-                    saldo_pendiente = float(credito.get('saldo_pendiente', 0))
-                    total_pagado = float(credito.get('total_pagado', 0))
-                    total_actualizado = float(credito.get('total_actualizado', total_venta))
-                    
-                    # Asegurar que saldo_pendiente no sea negativo
-                    if saldo_pendiente < 0:
-                        saldo_pendiente = 0
-                    
-                    # Calcular porcentaje pagado de forma segura
-                    if total_actualizado > 0:
-                        porcentaje_pagado = (total_pagado / total_actualizado) * 100
-                        # Limitar entre 0 y 100
-                        if porcentaje_pagado < 0:
-                            porcentaje_pagado = 0
-                        if porcentaje_pagado > 100:
-                            porcentaje_pagado = 100
-                    else:
-                        porcentaje_pagado = 0
-                    
-                    # Valor para progress bar (DEBE estar entre 0 y 1)
-                    progress_value = porcentaje_pagado / 100
-                    # Validación EXTRA para asegurar que está en rango
-                    if progress_value < 0:
-                        progress_value = 0
-                    if progress_value > 1:
-                        progress_value = 1
-                    
-                    with col1:
-                        st.metric("Total Original", f"Bs {total_venta:,.2f}")
-                        st.metric("Saldo Pendiente", f"Bs {saldo_pendiente:,.2f}")
-                    
-                    with col2:
-                        st.metric("Fecha Venta", credito.get('fecha_venta', 'N/A')[:10] if credito.get('fecha_venta') else 'N/A')
-                        st.metric("Tasa", f"Bs {credito.get('tasa_venta', 0):,.2f}")
-                    
-                    with col3:
-                        st.metric("Pagado", f"Bs {total_pagado:,.2f}")
-                        # Mostrar progress bar SOLO si el valor es válido
-                        if 0 <= progress_value <= 1:
-                            st.progress(progress_value)
-                            st.caption(f"{porcentaje_pagado:.1f}% pagado")
-                        else:
-                            # Fallback: mostrar texto en lugar de progress bar
-                            st.warning(f"Progreso: {porcentaje_pagado:.1f}% pagado")
-                    
-                    # Mostrar advertencia si hay sobrepago
-                    if saldo_pendiente < 0 or total_pagado > total_actualizado:
-                        st.error(f"⚠️ Este crédito tiene un sobrepago de Bs {abs(min(0, saldo_pendiente)):,.2f}. Verificar historial de pagos.")
-                        monto_maximo = 0
-                    else:
-                        monto_maximo = saldo_pendiente
-                    
-                    # Formulario de pago
-                    st.subheader("💰 Registrar Pago")
-                    
-                    monto_pago = st.number_input(
-                        f"Monto a pagar (Máximo: Bs {monto_maximo:,.2f})" if monto_maximo > 0 else "Monto a pagar (Crédito ya pagado)", 
-                        min_value=0.0, 
-                        max_value=float(monto_maximo) if monto_maximo > 0 else 0.0,
-                        step=100.0, 
-                        key=f"monto_{credito.get('id_venta')}",
-                        disabled=(monto_maximo <= 0)
-                    )
-                    observacion = st.text_input("Observación", key=f"obs_{credito.get('id_venta')}")
-                    
-                    if st.button(f"Registrar Pago", key=f"btn_{credito.get('id_venta')}", disabled=(monto_maximo <= 0)):
-                        if monto_pago > 0 and monto_maximo > 0 and monto_pago <= monto_maximo:
-                            with st.spinner("Procesando pago..."):
-                                resultado = pagar_credito_con_tasa(
-                                    credito.get('id_venta'),
-                                    monto_pago,
-                                    observacion or "Pago registrado en Streamlit",
-                                    tasa_actual.get('bcv_usd', 55.0)
-                                )
-                            if resultado.get('success'):
-                                st.success(f"✅ Pago registrado exitosamente")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ Error: {resultado.get('error')}")
-                        elif monto_pago > 0 and monto_maximo > 0 and monto_pago > monto_maximo:
-                            st.warning(f"El monto excede el saldo pendiente. Máximo: Bs {monto_maximo:,.2f}")
-                        else:
-                            st.warning("Ingrese un monto válido mayor a 0")
+            total_deuda = sum(c.get('saldo_pendiente', 0) for c in creditos)
+            total_original = sum(c.get('total_venta', 0) for c in creditos)
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Total Deuda Pendiente", f"Bs {total_deuda:,.2f}")
+            col2.metric("Total Original Créditos", f"Bs {total_original:,.2f}")
+            
+            # Porcentaje recuperado
+            if total_original > 0:
+                porcentaje_recuperado = ((total_original - total_deuda) / total_original) * 100
+                st.progress(porcentaje_recuperado / 100)
+                st.caption(f"{porcentaje_recuperado:.1f}% recuperado")
         else:
-            st.info("🎉 No hay créditos pendientes")
+            st.info("No hay créditos registrados")
     
-    except Exception as e:
-        st.error(f"Error cargando créditos: {e}")
-        st.code(traceback.format_exc())
+    elif tipo_reporte == "📋 Reporte general de ventas":
+        st.subheader("Reporte General de Ventas")
+        
+        periodo = st.selectbox(
+            "Período",
+            ["semanal", "mensual"]
+        )
+        
+        with st.spinner("Generando reporte..."):
+            reporte = reporte_ventas(periodo)
+        
+        if reporte:
+            df = pd.DataFrame(reporte)
+            st.dataframe(df, use_container_width=True)
+            
+            total_ventas = df['total_bs'].sum() if 'total_bs' in df.columns else 0
+            st.metric("Total Ventas", f"Bs {total_ventas:,.2f}")
+        else:
+            st.info("No hay datos de ventas")
+
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.caption(f"© 2024 Sistema de Ventas\n{datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+# Función auxiliar para calcular deuda de un cliente
+def calcular_deuda_cliente(cliente_id):
+    """Calcula la deuda total de un cliente"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COALESCE(SUM(saldo_pendiente), 0) 
+            FROM ventas 
+            WHERE id_cliente = %s AND credito = true AND pagado = false AND cancelada = false
+        """, (cliente_id,))
+        deuda = cursor.fetchone()[0] or 0
+        conn.close()
+        return deuda
+    except:
+        return 0
