@@ -1,1321 +1,475 @@
-from flask import Flask, render_template, request, jsonify, send_file
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from datetime import datetime, timedelta
+import io
+from PIL import Image
+
+# Importar tu lógica existente
 from database import init_db, get_clients, get_productos as get_products, add_client, add_product, reponer_stock, buscar_producto_por_descripcion, buscar_cliente_por_telefono, buscar_cliente_por_nombre, add_client_validado, get_connection
 from generar_recibo import generar_recibo_imagen
-from generar_recibo_cliente import generar_recibo_cliente
 from generar_recibo_profesional import generar_recibo_profesional
 from ventas_logic import (
     registrar_venta,
-    pagar_credito,
     pagar_credito_parcial,
-    cancelar_venta,
     ventas_con_retraso,
     reporte_ventas,
     reporte_produto,
     obtener_tasa_actual,
     obtener_historial_pagos,
-    generar_nota_debito,
-    obtener_estado_credito,
     reporte_por_rango,
     obtener_creditos_agrupados,
-    cancelar_creditos_global,
     pagar_credito_con_tasa
 )
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import LETTER
-from reportlab.lib import colors
-from datetime import datetime
-import os
-import io
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-from database import get_connection
 
-app = Flask(__name__)
-
-def formatear_telefono(telefono):
-    """Formatea número de teléfono 00000000000 -> 0000-0000000"""
-    if not telefono:
-        return telefono
-    telefono_limpio = ''.join(filter(str.isdigit, str(telefono)))
-    if len(telefono_limpio) == 11:
-        return f"{telefono_limpio[:4]}-{telefono_limpio[4:]}"
-    elif len(telefono_limpio) == 10:
-        return f"0{telefono_limpio[:3]}-{telefono_limpio[3:]}"
-    return telefono
-
-
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
-    return response
+# Configuración de la página
+st.set_page_config(
+    page_title="Sistema de Ventas",
+    page_icon="💰",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # Inicializar base de datos
-init_db()
+try:
+    init_db()
+    st.success("✅ Conectado a la base de datos")
+except Exception as e:
+    st.error(f"❌ Error de conexión: {e}")
 
+# Título principal
+st.title("💰 Sistema de Ventas Profesional")
+st.markdown("---")
 
-# ========== RUTA PRINCIPAL ==========
-@app.route('/')
-def index():
-    return render_template('index.html')
+# Sidebar para navegación
+st.sidebar.title("📋 Menú Principal")
+opcion = st.sidebar.selectbox(
+    "Seleccione una opción",
+    ["🏠 Dashboard", "🛍️ Registrar Venta", "👥 Clientes", "📦 Productos", 
+     "💳 Créditos", "📊 Reportes", "⚙️ Configuración"]
+)
 
+# Mostrar tasa actual en sidebar
+tasa_actual = obtener_tasa_actual()
+st.sidebar.info(f"💵 Tasa BCV: Bs {tasa_actual.get('bcv_usd', 55.0):.2f} / USD")
 
-# ========== API: TEST DB ==========
-@app.route('/api/test_db')
-def test_db():
+# ========== DASHBOARD ==========
+if opcion == "🏠 Dashboard":
+    st.header("📈 Dashboard de Ventas")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Obtener datos para el dashboard
     try:
         conn = get_connection()
+        
+        # Total ventas hoy
         cursor = conn.cursor()
+        cursor.execute("SELECT COALESCE(SUM(total), 0) FROM ventas WHERE DATE(fecha_venta) = CURRENT_DATE")
+        ventas_hoy = cursor.fetchone()[0] or 0
+        
+        # Total clientes
         cursor.execute("SELECT COUNT(*) FROM clientes")
-        count = cursor.fetchone()[0]
-        conn.close()
-        return jsonify({'success': True, 'clientes': count, 'db': 'PostgreSQL'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# ========== API: TASA ==========
-@app.route('/api/tasa', methods=['GET'])
-def api_tasa():
-    try:
-        return jsonify(obtener_tasa_actual())
-    except Exception as e:
-        return jsonify({'error': str(e), 'bcv_usd': 55.0, 'bcv_eur': 57.75}), 200
-
-
-# ========== API: CLIENTES ==========
-@app.route('/api/clientes', methods=['GET'])
-def api_clientes():
-    try:
-        return jsonify(get_clients())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/clientes', methods=['POST'])
-def api_add_cliente():
-    try:
-        data = request.json
-        if not data or not data.get('nombre'):
-            return jsonify({'success': False, 'error': 'Nombre requerido'}), 400
-        resultado = add_client_validado(data.get('nombre'), data.get('telefono', ''), data.get('direccion', ''))
-        return jsonify(resultado)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/clientes/<int:id_cliente>', methods=['PUT'])
-def api_actualizar_cliente(id_cliente):
-    try:
-        data = request.json
-        nombre = data.get('nombre')
-        telefono = data.get('telefono')
+        total_clientes = cursor.fetchone()[0]
         
-        if not nombre:
-            return jsonify({'success': False, 'error': 'Nombre requerido'}), 400
+        # Total productos
+        cursor.execute("SELECT COUNT(*) FROM productos WHERE activo = true")
+        total_productos = cursor.fetchone()[0]
         
-        if telefono:
-            telefono = formatear_telefono(telefono)
+        # Créditos pendientes
+        cursor.execute("SELECT COALESCE(SUM(saldo_pendiente), 0) FROM ventas WHERE credito = true AND pagado = false")
+        creditos_pendientes = cursor.fetchone()[0] or 0
         
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE clientes SET nombre = %s, telefono = %s WHERE id = %s", (nombre, telefono, id_cliente))
-        conn.commit()
         conn.close()
         
-        return jsonify({'success': True, 'mensaje': 'Cliente actualizado correctamente'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/clientes/buscar', methods=['GET'])
-def api_buscar_cliente():
-    try:
-        nombre = request.args.get('nombre', '')
-        telefono = request.args.get('telefono', '')
-        
-        if telefono:
-            cliente = buscar_cliente_por_telefono(telefono)
-            return jsonify(cliente if cliente else None)
-        elif nombre:
-            clientes = buscar_cliente_por_nombre(nombre)
-            return jsonify(clientes)
-        else:
-            return jsonify([])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/clientes/validar', methods=['POST'])
-def api_validar_cliente():
-    try:
-        data = request.json
-        nombre = data.get('nombre')
-        telefono = data.get('telefono')
-        
-        if not nombre:
-            return jsonify({'success': False, 'error': 'Nombre requerido'}), 400
-        
-        resultado = add_client_validado(nombre, telefono, '')
-        return jsonify(resultado)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# ========== API: PRODUCTOS ==========
-@app.route('/api/productos', methods=['GET'])
-def api_productos():
-    try:
-        return jsonify(get_products())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/productos', methods=['POST'])
-def api_add_producto():
-    try:
-        data = request.json
-        if not data.get('descripcion'):
-            return jsonify({'success': False, 'error': 'Descripción requerida'}), 400
-        resultado = add_product(data.get('descripcion'), float(data.get('costo', 0)), int(data.get('stock', 0)))
-        return jsonify(resultado)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/productos/reponer/<int:id_producto>', methods=['POST'])
-def api_reponer_stock(id_producto):
-    try:
-        data = request.json
-        cantidad = int(data.get('cantidad', 0))
-        if cantidad <= 0:
-            return jsonify({'success': False, 'error': 'Cantidad debe ser mayor a 0'}), 400
-        costo = float(data.get('costo')) if data.get('costo') else None
-        resultado = reponer_stock(id_producto, cantidad, costo)
-        return jsonify(resultado)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/productos/buscar', methods=['GET'])
-def api_buscar_producto():
-    try:
-        nombre = request.args.get('nombre', '')
-        descripcion = request.args.get('descripcion', '')
-        busqueda = nombre if nombre else descripcion
-        
-        if not busqueda:
-            return jsonify([])
-        
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
-            SELECT p.*, i.cantidad, i.costo
-            FROM productos p
-            LEFT JOIN inventario i ON p.id = i.id_producto
-            WHERE p.descripcion LIKE %s AND p.activo = TRUE
-            LIMIT 10
-        """, (f'%{busqueda}%',))
-        productos = cursor.fetchall()
-        conn.close()
-        return jsonify([dict(row) for row in productos])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/productos/actualizar/<int:id_producto>', methods=['PUT'])
-def api_actualizar_producto(id_producto):
-    try:
-        data = request.json
-        descripcion = data.get('descripcion')
-        costo = float(data.get('costo', 0))
-        stock = int(data.get('stock', 0))
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE productos SET descripcion = %s WHERE id = %s", (descripcion, id_producto))
-        cursor.execute("UPDATE inventario SET costo = %s, cantidad = %s WHERE id_producto = %s", (costo, stock, id_producto))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'success': True, 'mensaje': 'Producto actualizado'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# ========== API: VENTAS ==========
-@app.route('/api/ventas', methods=['POST'])
-def api_registrar_venta():
-    try:
-        data = request.json
-        id_cliente = int(data.get('id_cliente'))
-        productos = data.get('productos')
-        credito = data.get('credito', False)
-        fecha_manual = data.get('fecha_venta', None)
-        
-        if not productos and data.get('id_producto'):
-            productos = [{"id_producto": int(data.get('id_producto')), "cantidad": int(data.get('cantidad', 1))}]
-        
-        if not id_cliente or not productos:
-            return jsonify({'success': False, 'error': 'Cliente y productos requeridos'}), 400
-        
-        resultado = registrar_venta(id_cliente, productos, credito, fecha_manual)
-        return jsonify(resultado)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# ========== API: CRÉDITOS ==========
-@app.route('/api/creditos/agrupados', methods=['GET'])
-def get_creditos_agrupados():
-    try:
-        creditos = obtener_creditos_agrupados()
-        return jsonify(creditos)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/creditos/retraso', methods=['GET'])
-def api_creditos_retraso():
-    """Obtiene créditos con retraso (vencidos) - Versión PostgreSQL"""
-    try:
-        creditos_retraso = ventas_con_retraso()
-        return jsonify(creditos_retraso)
-    except Exception as e:
-        print(f"❌ Error en créditos con retraso: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/creditos/pagar', methods=['POST'])
-def api_pagar_credito():
-    try:
-        data = request.json
-        id_venta = data.get('id_venta')
-        monto = data.get('monto', 0)
-        observacion = data.get('observacion', '')
-        tasa_actual = data.get('tasa_actual', 0)
-        resultado = pagar_credito_con_tasa(id_venta, monto, observacion, tasa_actual)
-        
-        if resultado.get('success'):
-            datos_recibo = {
-                'cliente': resultado.get('cliente_nombre', 'Cliente'),
-                'telefono': resultado.get('cliente_telefono', ''),
-                'fecha': datetime.now().strftime('%d/%m/%Y'),
-                'productos': resultado.get('productos', []),
-                'total': resultado.get('total_venta', 0),
-                'tasa': resultado.get('tasa_venta', 0),
-                'tasa_actual': resultado.get('tasa_aplicada', 0),
-                'tipo': 'CRÉDITO',
-                'saldo_pendiente': resultado.get('saldo_pendiente', 0)
-            }
-            img_bytes = generar_recibo_profesional(datos_recibo)
-            return send_file(img_bytes, mimetype='image/png', as_attachment=False)
-        else:
-            return jsonify(resultado), 400
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# ========== API: REPORTES ==========
-@app.route('/api/reportes/ventas', methods=['GET'])
-def api_reporte_ventas():
-    try:
-        periodo = request.args.get('periodo', 'semanal')
-        return jsonify(reporte_ventas(periodo))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/reportes/productos', methods=['GET'])
-def api_reporte_productos():
-    try:
-        return jsonify(reporte_produto())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/reportes/rango', methods=['POST'])
-def api_reporte_rango():
-    try:
-        data = request.json
-        fecha_inicio = data.get('fecha_inicio')
-        fecha_fin = data.get('fecha_fin')
-        tipo = data.get('tipo', 'dia')
-        filtro_venta = data.get('filtro_venta', 'todas')
-        resultado = reporte_por_rango(fecha_inicio, fecha_fin, tipo, filtro_venta)
-        return jsonify(resultado)
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# ========== API: RECIBOS ==========
-@app.route('/api/ventas/recibo/<int:id_venta>', methods=['GET'])
-def api_generar_recibo(id_venta):
-    try:
-        import traceback
-        print(f"🔵 Generando recibo para venta ID: {id_venta}")
-        
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # 1. Obtener datos de la venta
-        print("🔵 Consultando venta...")
-        cursor.execute("""
-            SELECT v.*, c.nombre, c.telefono 
-            FROM ventas v 
-            JOIN clientes c ON v.id_cliente = c.id 
-            WHERE v.id = %s
-        """, (id_venta,))
-        datos = cursor.fetchone()
-        
-        if not datos:
-            conn.close()
-            print("❌ Venta no encontrada")
-            return jsonify({'error': 'Venta no encontrada'}), 404
-        
-        print(f"✅ Venta encontrada: {datos.get('id')}")
-        
-        # 2. Obtener productos
-        print("🔵 Consultando productos...")
-        cursor.execute("""
-            SELECT p.descripcion, dv.cantidad, dv.precio_unitario 
-            FROM detalles_venta dv 
-            JOIN productos p ON dv.id_producto = p.id 
-            WHERE dv.id_venta = %s
-        """, (id_venta,))
-        productos = cursor.fetchall()
-        conn.close()
-        
-        print(f"✅ Productos encontrados: {len(productos)}")
-        
-        # 3. Obtener tasa actual
-        print("🔵 Obteniendo tasa actual...")
-        tasa_response = obtener_tasa_actual()
-        tasa_actual = tasa_response.get("bcv_usd", 55.0)
-        print(f"✅ Tasa actual: {tasa_actual}")
-        
-        # 4. Preparar datos del recibo
-        print("🔵 Preparando datos del recibo...")
-        
-        # Manejar fecha
-        fecha_venta = datos.get('fecha_venta')
-        if fecha_venta:
-            if hasattr(fecha_venta, 'strftime'):
-                fecha_str = fecha_venta.strftime('%d/%m/%Y')
-            else:
-                fecha_str = str(fecha_venta)[:10]
-        else:
-            fecha_str = ''
-        
-        datos_recibo = {
-            'cliente': datos.get('nombre', 'Cliente'),
-            'telefono': datos.get('telefono', ''),
-            'fecha': fecha_str,
-            'productos': [
-                {
-                    'descripcion': p['descripcion'], 
-                    'cantidad': p['cantidad'],
-                    'precio_usd': float(p['precio_unitario']) if p['precio_unitario'] else 0
-                } 
-                for p in productos
-            ],
-            'total': float(datos.get('total', 0)),
-            'tasa': float(datos.get('tasa', 0)) if datos.get('tasa') else 0,
-            'tasa_actual': tasa_actual,
-            'tipo': 'CRÉDITO' if datos.get('credito') else 'CONTADO',
-            'saldo_pendiente': float(datos.get('saldo_pendiente', 0)) if datos.get('saldo_pendiente') else 0
-        }
-        
-        # 5. Generar recibo
-        print("🔵 Generando recibo profesional...")
-        try:
-            from generar_recibo_profesional import generar_recibo_profesional
-            img_bytes = generar_recibo_profesional(datos_recibo)
-            print("✅ Recibo generado exitosamente")
-            return send_file(img_bytes, mimetype='image/png', as_attachment=False)
-        except ImportError:
-            print("⚠️ generar_recibo_profesional no encontrado, usando versión simple")
-            from generar_recibo import generar_recibo_imagen
-            img_bytes = generar_recibo_imagen(datos_recibo)
-            return send_file(img_bytes, mimetype='image/png', as_attachment=False)
+        col1.metric("💰 Ventas Hoy", f"Bs {ventas_hoy:,.2f}")
+        col2.metric("👥 Clientes", total_clientes)
+        col3.metric("📦 Productos", total_productos)
+        col4.metric("💳 Créditos Pendientes", f"Bs {creditos_pendientes:,.2f}")
         
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        print(traceback.format_exc())
-        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
-
-@app.route('/api/ventas/actualizar-fecha-historica/<int:id_venta>', methods=['POST'])
-def api_actualizar_fecha_historica(id_venta):
-    """
-    Actualiza fecha, tasa y productos de una venta histórica
-    Adaptado para PostgreSQL/Supabase
-    """
-    try:
-        data = request.json
-        fecha = data.get('fecha')
-        tasa = float(data.get('tasa', 0))
-        productos = data.get('productos', [])
-        
-        if not fecha:
-            return jsonify({'success': False, 'error': 'Fecha requerida'}), 400
-        
-        if tasa <= 0:
-            return jsonify({'success': False, 'error': 'Tasa inválida'}), 400
-        
-        if not productos or len(productos) == 0:
-            return jsonify({'success': False, 'error': 'Productos requeridos'}), 400
-        
-        # Calcular total correcto
-        total_correcto = sum(float(p.get('subtotal', 0)) for p in productos)
-        
-        if total_correcto <= 0:
-            return jsonify({'success': False, 'error': 'Total inválido'}), 400
-        
-        # Conectar a Supabase (PostgreSQL)
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # Iniciar transacción
-            cursor.execute("BEGIN")
-            
-            # 1. Actualizar la venta principal
-            # PostgreSQL usa %s como placeholder y requiere casting de fecha
-            cursor.execute("""
-                UPDATE ventas 
-                SET fecha_venta = %s::timestamp, 
-                    tasa = %s, 
-                    total = %s 
-                WHERE id = %s
-            """, (fecha, tasa, total_correcto, id_venta))
-            
-            # Verificar si se actualizó alguna fila
-            if cursor.rowcount == 0:
-                cursor.execute("ROLLBACK")
-                conn.close()
-                return jsonify({'success': False, 'error': f'Venta {id_venta} no encontrada'}), 404
-            
-            # 2. Actualizar detalles de la venta
-            for prod in productos:
-                id_producto = prod.get('id_producto')
-                cantidad = int(prod.get('cantidad', 0))
-                subtotal = float(prod.get('subtotal', 0))
-                
-                if cantidad <= 0 or subtotal <= 0:
-                    continue
-                
-                precio_unitario = subtotal / cantidad
-                
-                # Actualizar o insertar detalle
-                cursor.execute("""
-                    UPDATE detalles_venta 
-                    SET cantidad = %s, 
-                        precio_unitario = %s, 
-                        subtotal = %s 
-                    WHERE id_venta = %s AND id_producto = %s
-                """, (cantidad, precio_unitario, subtotal, id_venta, id_producto))
-                
-                # Si no existía el detalle, insertarlo
-                if cursor.rowcount == 0:
-                    cursor.execute("""
-                        INSERT INTO detalles_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (id_venta, id_producto, cantidad, precio_unitario, subtotal))
-            
-            # 3. Si la venta es a crédito, recalcular el saldo pendiente
-            cursor.execute("""
-                SELECT credito, monto_pagado FROM ventas WHERE id = %s
-            """, (id_venta,))
-            venta = cursor.fetchone()
-            
-            if venta and venta[0] == True:  # Si es crédito
-                monto_pagado = venta[1] if venta[1] else 0
-                nuevo_saldo = total_correcto - monto_pagado
-                
-                cursor.execute("""
-                    UPDATE ventas 
-                    SET saldo_pendiente = %s,
-                        estado = CASE 
-                            WHEN %s <= 0 THEN 'pagado'
-                            ELSE 'pendiente'
-                        END
-                    WHERE id = %s
-                """, (nuevo_saldo, nuevo_saldo, id_venta))
-            
-            # Commit de la transacción
-            cursor.execute("COMMIT")
-            
-            print(f"✅ Venta {id_venta} actualizada - Total: Bs {total_correcto:.2f}")
-            
-            return jsonify({
-                'success': True, 
-                'total': total_correcto,
-                'mensaje': f'Venta actualizada correctamente'
-            })
-            
-        except Exception as e:
-            # Rollback en caso de error
-            cursor.execute("ROLLBACK")
-            raise e
-        finally:
-            conn.close()
-        
-    except Exception as e:
-        print(f"❌ Error actualizando venta {id_venta}: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-
-# ========== API: REPORTE CRÉDITOS CLIENTE PDF ==========
-# Importa ReportLab (asegúrate de agregarlo a tu requirements.txt)
-# ========== API: GENERAR PDF DEL REPORTE GLOBAL POR CLIENTE ==========
-@app.route('/api/creditos/reporte_cliente_pdf/<int:id_cliente>', methods=['GET'])
-def api_generar_pdf_reporte_cliente(id_cliente):
-    """Genera un PNG con el reporte global de todas las deudas del cliente"""
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-        from datetime import datetime
-        import io
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        # PostgreSQL usa %s, no ?
-        cursor.execute("SELECT nombre, telefono FROM clientes WHERE id = %s", (id_cliente,))
-        cliente = cursor.fetchone()
-        
-        if not cliente:
-            conn.close()
-            return jsonify({'error': 'Cliente no encontrado'}), 404
-
-        # PostgreSQL usa TRUE/FALSE, no 1/0
-        cursor.execute("""
-            SELECT v.id, v.fecha_venta, v.total, v.tasa,
-                   COALESCE((SELECT SUM(monto_pagado) FROM pagos_credito WHERE id_venta = v.id), 0) as total_pagado
-            FROM ventas v
-            WHERE v.id_cliente = %s AND v.credito = true AND v.cancelada = false
-            ORDER BY v.fecha_venta ASC
-        """, (id_cliente,))
-
-        ventas = cursor.fetchall()
-
-        if not ventas:
-            conn.close()
-            return jsonify({'error': 'Cliente no tiene creditos registrados'}), 404
-
-        # Obtener tasa actual
-        tasa_actual = obtener_tasa_actual().get("bcv_usd", 55.0)
-
-        # Calcular tamaño de la imagen
-        ancho = 800
-        alto = 500 + (len(ventas) * 150)
-        color_fondo = (255, 255, 255)
-        color_primario = (25, 118, 210)
-        color_exito = (76, 175, 80)
-        color_warning = (255, 152, 0)
-        color_texto = (51, 51, 51)
-        color_gris = (117, 117, 117)
-
-        img = Image.new('RGB', (ancho, alto), color_fondo)
-        draw = ImageDraw.Draw(img)
-
-        # Fuentes (con fallback para Linux)
-        try:
-            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
-            font_normal = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
-        except:
-            font_titulo = ImageFont.load_default()
-            font_normal = ImageFont.load_default()
-
-        y = 20
-
-        # Encabezado
-        draw.rectangle([0, 0, ancho, 80], fill=color_primario)
-        draw.text((ancho//2 - 40, 30), "VENTAS PRO", font=font_titulo, fill=(255,255,255))
-        draw.text((ancho//2 - 80, 55), "REPORTE GLOBAL DE CREDITOS", font=font_normal, fill=(255,255,255))
-
-        y = 100
-
-        # Datos del cliente
-        draw.text((30, y), f"Cliente: {cliente[0]}", font=font_normal, fill=color_primario)
-        y += 22
-        draw.text((30, y), f"Telefono: {cliente[1] or 'No registrado'}", font=font_normal, fill=color_texto)
-        y += 22
-        draw.text((30, y), f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}", font=font_normal, fill=color_gris)
-        y += 30
-
-        draw.line([30, y, ancho-30, y], fill=color_gris, width=1)
-        y += 15
-
-        draw.text((30, y), "DETALLE DE CREDITOS", font=font_normal, fill=color_primario)
-        y += 25
-
-        total_adeudado = 0
-
-        for i, venta in enumerate(ventas):
-            id_venta, fecha_venta, total, tasa_venta, total_pagado = venta
-            total = float(total)
-            tasa_venta = float(tasa_venta) if tasa_venta else 55.0
-            total_pagado = float(total_pagado) if total_pagado else 0
-
-            # Obtener productos
-            cursor_prod = conn.cursor()
-            cursor_prod.execute("""
-                SELECT p.descripcion, dv.cantidad
-                FROM detalles_venta dv
-                JOIN productos p ON dv.id_producto = p.id
-                WHERE dv.id_venta = %s
-            """, (id_venta,))
-            productos = cursor_prod.fetchall()
-            cursor_prod.close()
-
-            # Calcular valores
-            total_usd = total / tasa_venta if tasa_venta > 0 else 0
-            total_actualizado = total_usd * tasa_actual
-            saldo_pendiente = total_actualizado - total_pagado
-
-            total_adeudado += max(0, saldo_pendiente)
-
-            # Fondo alternado
-            if i % 2 == 0:
-                draw.rectangle([30, y-5, ancho-30, y+95], fill=(248, 248, 248))
-
-            # Manejar fecha (PostgreSQL devuelve datetime)
-            if hasattr(fecha_venta, 'strftime'):
-                fecha_str = fecha_venta.strftime('%d/%m/%Y')
-            else:
-                fecha_str = str(fecha_venta)[:10]
-
-            draw.text((45, y), f"Venta #{id_venta} - {fecha_str}", font=font_normal, fill=color_primario)
-            y += 18
-
-            # Productos
-            prod_text = ""
-            for idx, p in enumerate(productos[:2]):
-                if idx > 0:
-                    prod_text += ", "
-                prod_text += f"{p[0]} x{p[1]}"
-            if len(productos) > 2:
-                prod_text += f" +{len(productos)-2} mas"
-            draw.text((45, y), prod_text, font=font_normal, fill=color_gris)
-            y += 16
-
-            draw.text((45, y), f"Original: Bs {total_actualizado:,.2f}", font=font_normal, fill=color_texto)
-            y += 16
-
-            draw.text((45, y), f"Pagado: Bs {total_pagado:,.2f}", font=font_normal, fill=color_exito)
-            draw.text((280, y), f"Saldo: Bs {max(0, saldo_pendiente):,.2f}", font=font_normal, fill=color_warning)
-            y += 18
-
-            draw.line([45, y, ancho-45, y], fill=color_gris, width=1)
-            y += 12
-
-        # Total general
-        y += 10
-        draw.rectangle([30, y-10, ancho-30, y+40], fill=color_primario)
-        draw.text((ancho//2 - 120, y), f"TOTAL ADEUDADO: Bs {total_adeudado:,.2f}", font=font_normal, fill=(255,255,255))
-        y += 45
-
-        # Footer
-        draw.line([30, alto-40, ancho-30, alto-40], fill=color_gris, width=1)
-        draw.text((ancho//2 - 100, alto-25), "Documento valido como comprobante", font=font_normal, fill=color_gris)
-        draw.text((ancho//2 - 80, alto-12), "Gracias por confiar en Ventas Pro", font=font_normal, fill=color_gris)
-
-        conn.close()
-
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format='PNG', optimize=True)
-        img_bytes.seek(0)
-
-        return send_file(
-            img_bytes,
-            mimetype='image/png',
-            as_attachment=False,
-            download_name=f"reporte_{cliente[0].replace(' ', '_')}.png"
-        )
-
-    except Exception as e:
-        print(f"❌ Error generando reporte: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-
-# ========== FUNCIÓN PARA RECIBO DE CANCELACIÓN GLOBAL ==========
-def generar_recibo_cancelacion_global(datos_cliente, lista_deudas, tasa_actual):
-    """
-    Genera un recibo profesional UNIFICADO para cancelación global de todas las deudas de un cliente
-    Versión mejorada - compatible con Supabase y manejo de errores
-    """
-    from PIL import Image, ImageDraw, ImageFont
-    import io
-    from datetime import datetime
+        st.error(f"Error cargando dashboard: {e}")
     
+    # Gráfico de ventas últimos 7 días
+    st.subheader("📊 Ventas Últimos 7 Días")
     try:
-        # Validaciones iniciales
-        if not datos_cliente:
-            raise ValueError("Datos del cliente son requeridos")
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DATE(fecha_venta) as fecha, SUM(total) as total
+            FROM ventas
+            WHERE fecha_venta >= CURRENT_DATE - INTERVAL '7 days'
+            GROUP BY DATE(fecha_venta)
+            ORDER BY fecha
+        """)
+        datos = cursor.fetchall()
+        conn.close()
         
-        if not lista_deudas or len(lista_deudas) == 0:
-            raise ValueError("No hay deudas para cancelar")
+        if datos:
+            df = pd.DataFrame(datos, columns=['fecha', 'total'])
+            fig = px.line(df, x='fecha', y='total', title='Ventas Diarias')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No hay datos de ventas en los últimos 7 días")
+    except Exception as e:
+        st.error(f"Error cargando gráfico: {e}")
+
+# ========== REGISTRAR VENTA ==========
+elif opcion == "🛍️ Registrar Venta":
+    st.header("🛍️ Nueva Venta")
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        # Buscar cliente
+        st.subheader("👤 Cliente")
+        buscar_cliente = st.text_input("Buscar cliente por nombre o teléfono")
         
-        if tasa_actual <= 0:
-            raise ValueError("Tasa actual inválida")
-        
-        # Configuración
-        ancho = 700
-        # Calcular altura dinámicamente basada en número de deudas
-        alto = 500 + (len(lista_deudas) * 70)
-        
-        color_fondo = (255, 255, 255)
-        color_primario = (25, 118, 210)
-        color_exito = (76, 175, 80)
-        color_texto = (51, 51, 51)
-        color_gris = (117, 117, 117)
-        color_warning = (255, 152, 0)
-        
-        img = Image.new('RGB', (ancho, alto), color_fondo)
-        draw = ImageDraw.Draw(img)
-        
-        # Fuentes con múltiples fallbacks
-        font_titulo = None
-        font_subtitulo = None
-        font_normal = None
-        font_pequeno = None
-        
-        # Intentar diferentes rutas de fuentes (común en diferentes sistemas)
-        font_paths = [
-            # Linux (Render, Ubuntu, Debian)
-            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
-            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            # macOS
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/Library/Fonts/Arial.ttf",
-            # Windows
-            "C:\\Windows\\Fonts\\arial.ttf",
-            "C:\\Windows\\Fonts\\arialbd.ttf",
-        ]
-        
-        def get_font(font_paths, size, bold=False):
-            for path in font_paths:
-                try:
-                    if (bold and 'Bold' in path) or (not bold and 'Regular' in path) or \
-                       (bold and 'bd' in path.lower()) or (not bold and 'arial.ttf' in path):
-                        return ImageFont.truetype(path, size)
-                except:
-                    continue
-            # Fallback a fuentes específicas
-            for path in font_paths:
-                try:
-                    return ImageFont.truetype(path, size)
-                except:
-                    continue
-            return ImageFont.load_default()
-        
-        # Cargar fuentes
-        try:
-            font_titulo = get_font(font_paths, 24, bold=True)
-            font_subtitulo = get_font(font_paths, 18, bold=True)
-            font_normal = get_font(font_paths, 14, bold=False)
-            font_pequeno = get_font(font_paths, 11, bold=False)
-        except:
-            font_titulo = font_subtitulo = font_normal = font_pequeno = ImageFont.load_default()
-        
-        y = 25
-        
-        # Encabezado
-        draw.rectangle([0, 0, ancho, 100], fill=color_primario)
-        
-        # Centrar texto del título
-        titulo_texto = "VENTAS PRO"
-        try:
-            titulo_bbox = draw.textbbox((0, 0), titulo_texto, font=font_titulo)
-            titulo_ancho = titulo_bbox[2] - titulo_bbox[0]
-        except:
-            titulo_ancho = 150
-        
-        draw.text(((ancho - titulo_ancho) // 2, 30), titulo_texto, font=font_titulo, fill=(255,255,255))
-        
-        subtitulo_texto = "CANCELACIÓN TOTAL DE CRÉDITOS"
-        try:
-            subtitulo_bbox = draw.textbbox((0, 0), subtitulo_texto, font=font_subtitulo)
-            subtitulo_ancho = subtitulo_bbox[2] - subtitulo_bbox[0]
-        except:
-            subtitulo_ancho = 250
-        
-        draw.text(((ancho - subtitulo_ancho) // 2, 65), subtitulo_texto, font=font_subtitulo, fill=(255,255,255))
-        
-        y = 120
-        
-        # Datos del cliente (con manejo de campos nulos)
-        nombre_cliente = datos_cliente.get('nombre', 'Cliente')
-        if not nombre_cliente:
-            nombre_cliente = 'Cliente'
-        
-        draw.text((30, y), f"Cliente: {nombre_cliente}", font=font_subtitulo, fill=color_primario)
-        y += 25
-        
-        telefono = datos_cliente.get('telefono', 'N/A')
-        if not telefono:
-            telefono = 'No registrado'
-        draw.text((30, y), f"Teléfono: {telefono}", font=font_normal, fill=color_texto)
-        y += 25
-        
-        draw.text((30, y), f"Fecha de cancelación: {datetime.now().strftime('%d/%m/%Y %H:%M')}", font=font_pequeno, fill=color_gris)
-        y += 40
-        
-        draw.line([30, y, ancho-30, y], fill=color_gris, width=1)
-        y += 20
-        
-        # Lista de deudas canceladas
-        draw.text((30, y), "CRÉDITOS CANCELADOS", font=font_subtitulo, fill=color_primario)
-        y += 30
-        
-        total_general_bs = 0
-        total_general_usd = 0
-        
-        for i, deuda in enumerate(lista_deudas):
-            try:
-                # Validar datos de la deuda
-                if not deuda:
-                    continue
-                
-                # Colores alternados para filas
-                if i % 2 == 0:
-                    draw.rectangle([30, y-5, ancho-30, y+65], fill=(248, 248, 248))
-                
-                # Obtener valores con defaults seguros
-                total_deuda = float(deuda.get('total', 0))
-                tasa_deuda = float(deuda.get('tasa', 0))
-                total_usd = total_deuda / tasa_deuda if tasa_deuda > 0 else 0
-                total_actualizado = total_usd * float(tasa_actual)
-                
-                # Manejo de fecha
-                fecha_venta = deuda.get('fecha_venta', '')
-                if fecha_venta:
-                    if isinstance(fecha_venta, str):
-                        fecha_venta = fecha_venta.split(' ')[0]
-                    elif hasattr(fecha_venta, 'strftime'):
-                        fecha_venta = fecha_venta.strftime('%d/%m/%Y')
+        if buscar_cliente:
+            cliente_encontrado = buscar_cliente_por_nombre(buscar_cliente) or buscar_cliente_por_telefono(buscar_cliente)
+            if cliente_encontrado:
+                st.success(f"Cliente seleccionado: {cliente_encontrado['nombre']}")
+                id_cliente = cliente_encontrado['id']
+            else:
+                st.warning("Cliente no encontrado. Complete el formulario para crear uno nuevo:")
+                nombre_nuevo = st.text_input("Nombre del nuevo cliente")
+                telefono_nuevo = st.text_input("Teléfono")
+                if st.button("Registrar Cliente") and nombre_nuevo:
+                    resultado = add_client_validado(nombre_nuevo, telefono_nuevo, "")
+                    if resultado['success']:
+                        st.success("Cliente registrado exitosamente")
+                        id_cliente = resultado.get('id')
                     else:
-                        fecha_venta = str(fecha_venta)[:10]
-                else:
-                    fecha_venta = 'Fecha no disponible'
-                
-                draw.text((45, y), f"Venta del: {fecha_venta}", font=font_normal, fill=color_primario)
-                y += 22
-                
-                # Productos
-                productos = deuda.get('productos', [])
-                if productos and len(productos) > 0:
-                    prod_text = ""
-                    for idx, p in enumerate(productos[:2]):
-                        desc = p.get('descripcion', 'Producto')
-                        cant = p.get('cantidad', 1)
-                        if idx > 0:
-                            prod_text += ", "
-                        prod_text += f"{desc} x{cant}"
-                    if len(productos) > 2:
-                        prod_text += f" +{len(productos)-2} más"
-                    draw.text((45, y), prod_text, font=font_pequeno, fill=color_gris)
-                else:
-                    draw.text((45, y), "Sin detalles de productos", font=font_pequeno, fill=color_gris)
-                y += 20
-                
-                draw.text((45, y), f"Deuda original: Bs {total_deuda:,.2f}", font=font_normal, fill=color_texto)
-                draw.text((280, y), f"Tasa venta: Bs {tasa_deuda:,.2f}", font=font_normal, fill=color_texto)
-                y += 18
-                
-                draw.text((45, y), f"Cancelado HOY: Bs {total_actualizado:,.2f}", font=font_normal, fill=color_exito)
-                draw.text((280, y), f"(USD ${total_usd:,.2f} x Tasa Bs {tasa_actual:,.2f})", font=font_pequeno, fill=color_gris)
-                y += 25
-                
-                draw.line([45, y, ancho-45, y], fill=color_gris, width=1)
-                y += 15
-                
-                total_general_usd += total_usd
-                total_general_bs += total_actualizado
-                
-            except Exception as e:
-                print(f"Error procesando deuda {i}: {e}")
-                continue
-        
-        # Total general
-        y += 10
-        draw.rectangle([30, y-10, ancho-30, y+40], fill=color_exito)
-        
-        total_texto = f"TOTAL CANCELADO: Bs {total_general_bs:,.2f}"
-        try:
-            total_bbox = draw.textbbox((0, 0), total_texto, font=font_subtitulo)
-            total_ancho = total_bbox[2] - total_bbox[0]
-        except:
-            total_ancho = 300
-        
-        draw.text(((ancho - total_ancho) // 2, y), total_texto, font=font_subtitulo, fill=(255,255,255))
-        y += 55
-        
-        usd_texto = f"(Equivalente a USD ${total_general_usd:,.2f})"
-        try:
-            usd_bbox = draw.textbbox((0, 0), usd_texto, font=font_pequeno)
-            usd_ancho = usd_bbox[2] - usd_bbox[0]
-        except:
-            usd_ancho = 200
-        
-        draw.text(((ancho - usd_ancho) // 2, y), usd_texto, font=font_pequeno, fill=color_gris)
-        
-        # Footer
-        y = alto - 60
-        draw.line([30, y, ancho-30, y], fill=color_gris, width=1)
-        
-        mensaje_success = "✓ Todas las deudas han sido canceladas"
-        draw.text((30, y+15), mensaje_success, font=font_pequeno, fill=color_exito)
-        
-        mensaje_gracias = "Gracias por confiar en nosotros!"
-        try:
-            gracias_bbox = draw.textbbox((0, 0), mensaje_gracias, font=font_pequeno)
-            gracias_ancho = gracias_bbox[2] - gracias_bbox[0]
-        except:
-            gracias_ancho = 200
-        
-        draw.text((ancho - gracias_ancho - 30, y+15), mensaje_gracias, font=font_pequeno, fill=color_gris)
-        
-        # Convertir a bytes
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format='PNG', optimize=True)
-        img_bytes.seek(0)
-        
-        return img_bytes
-        
-    except Exception as e:
-        print(f"Error generando recibo de cancelación global: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # Generar un recibo de emergencia simple
-        from PIL import Image, ImageDraw
-        
-        img = Image.new('RGB', (600, 400), (255, 255, 255))
-        draw = ImageDraw.Draw(img)
-        draw.text((50, 50), "RECIBO DE CANCELACIÓN", fill=(0,0,0))
-        draw.text((50, 100), f"Cliente: {datos_cliente.get('nombre', 'N/A')}", fill=(0,0,0))
-        draw.text((50, 150), f"Total Cancelado: Bs {sum(d.get('total',0) for d in lista_deudas):,.2f}", fill=(0,0,0))
-        draw.text((50, 200), f"Fecha: {datetime.now().strftime('%d/%m/%Y')}", fill=(0,0,0))
-        draw.text((50, 250), "Documento generado automáticamente", fill=(100,100,100))
-        
-        img_bytes = io.BytesIO()
-        img.save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-        
-        return img_bytes
-
-# ========== API: CANCELACIÓN GLOBAL DE CRÉDITOS ==========
-# ========== API: CANCELACIÓN GLOBAL DE CRÉDITOS ==========
-@app.route('/api/creditos/cancelar_global', methods=['POST'])
-def cancelar_creditos_global():
-    """Cancela TODAS las deudas de un cliente de una sola vez - Versión PostgreSQL"""
-    try:
-        data = request.json
-        cliente_id = data.get('cliente_id')
-        tasa_actual = data.get('tasa_actual', 0)
-
-        if not cliente_id:
-            return jsonify({'error': 'Cliente no especificado'}), 400
-
-        if tasa_actual <= 0:
-            return jsonify({'error': 'Tasa actual inválida'}), 400
-
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        try:
-            # Iniciar transacción
-            cursor.execute("BEGIN")
-
-            # Obtener deudas pendientes del cliente (PostgreSQL: true/false, %s)
-            cursor.execute("""
-                SELECT v.id, v.fecha_venta, v.total, v.tasa, 
-                       c.nombre as cliente_nombre, c.telefono
-                FROM ventas v
-                JOIN clientes c ON v.id_cliente = c.id
-                WHERE v.id_cliente = %s
-                AND v.credito = true
-                AND v.pagado = false
-                AND v.cancelada = false
-            """, (cliente_id,))
-
-            deudas = cursor.fetchall()
-
-            if not deudas:
-                cursor.execute("ROLLBACK")
-                conn.close()
-                return jsonify({'error': 'No hay deudas pendientes para este cliente'}), 400
-
-            total_cancelado_bs = 0
-            deudas_canceladas = []
-            ahora = datetime.now()
-
-            for deuda in deudas:
-                id_venta = deuda[0]
-                fecha_venta = deuda[1]
-                total_venta = float(deuda[2])
-                tasa_venta = float(deuda[3]) if deuda[3] else 0
-                cliente_nombre = deuda[4]
-                cliente_telefono = deuda[5] if deuda[5] else ''
-
-                # Calcular monto a cancelar
-                if tasa_venta > 0:
-                    total_usd = total_venta / tasa_venta
-                else:
-                    total_usd = total_venta / 55.0
-                
-                monto_cancelar = total_usd * tasa_actual
-
-                # Insertar registro de pago (PostgreSQL: %s, RETURNING id)
-                cursor.execute("""
-                    INSERT INTO pagos_credito (id_venta, monto_pagado, tasa_pago, observacion, fecha_pago)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING id
-                """, (
-                    id_venta,
-                    monto_cancelar,
-                    tasa_actual,
-                    f'CANCELACIÓN GLOBAL - {ahora.strftime("%Y-%m-%d %H:%M:%S")}',
-                    ahora
-                ))
-
-                # Actualizar la venta (PostgreSQL: true/false, sin monto_pagado)
-                cursor.execute("""
-                    UPDATE ventas
-                    SET pagado = true,
-                        saldo_pendiente = 0,
-                        fecha_pago = %s
-                    WHERE id = %s
-                """, (ahora, id_venta))
-
-                total_cancelado_bs += monto_cancelar
-
-                # Obtener productos de la venta
-                cursor.execute("""
-                    SELECT p.descripcion, dv.cantidad
-                    FROM detalles_venta dv
-                    JOIN productos p ON dv.id_producto = p.id
-                    WHERE dv.id_venta = %s
-                """, (id_venta,))
-                productos = cursor.fetchall()
-
-                # Formatear fecha
-                if isinstance(fecha_venta, datetime):
-                    fecha_venta_str = fecha_venta.strftime('%Y-%m-%d %H:%M:%S')
-                else:
-                    fecha_venta_str = str(fecha_venta)
-
-                deudas_canceladas.append({
-                    'id_venta': id_venta,
-                    'fecha_venta': fecha_venta_str,
-                    'total': total_venta,
-                    'tasa': tasa_venta,
-                    'productos': [{'descripcion': p[0], 'cantidad': p[1]} for p in productos]
-                })
-
-            # Datos del cliente (usar el primero de la lista)
-            datos_cliente = {
-                'id': cliente_id,
-                'nombre': deudas[0][4],
-                'telefono': deudas[0][5] if deudas[0][5] else ''
-            }
-
-            # Commit de la transacción
-            cursor.execute("COMMIT")
-            conn.close()
-
-            # Generar recibo
-            recibo_img = generar_recibo_cancelacion_global(datos_cliente, deudas_canceladas, tasa_actual)
-
-            return send_file(
-                recibo_img,
-                mimetype='image/png',
-                as_attachment=False,
-                download_name=f"cancelacion_global_{datos_cliente['nombre'].replace(' ', '_')}_{ahora.strftime('%Y%m%d_%H%M%S')}.png"
-            )
-
-        except Exception as e:
-            cursor.execute("ROLLBACK")
-            conn.close()
-            raise e
-
-    except Exception as e:
-        print(f"❌ Error en cancelación global: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+                        st.error(resultado.get('error'))
+        else:
+            id_cliente = None
     
-    
-    # ========== API: PAGAR CRÉDITO CON TASA ACTUAL ==========
-@app.route('/api/creditos/pagar', methods=['POST'])
-def api_pagar_credito_con_tasa():
-    """Registra pago de un crédito individual con la tasa actual - Versión PostgreSQL"""
-    try:
-        data = request.json
-        id_venta = data.get('id_venta')
-        monto = data.get('monto', 0)
-        observacion = data.get('observacion', '')
-        tasa_actual = data.get('tasa_actual', 0)
-
-        # Validaciones
-        if not id_venta:
-            return jsonify({'success': False, 'error': 'ID de venta requerido'}), 400
+    with col2:
+        # Agregar productos
+        st.subheader("📦 Productos")
         
-        if monto <= 0:
-            return jsonify({'success': False, 'error': 'Monto debe ser mayor a 0'}), 400
+        if 'carrito' not in st.session_state:
+            st.session_state.carrito = []
         
-        if tasa_actual <= 0:
-            return jsonify({'success': False, 'error': 'Tasa actual inválida'}), 400
-
-        # Llamar a la función de pago (adaptada para PostgreSQL)
-        resultado = pagar_credito_con_tasa(id_venta, monto, observacion, tasa_actual)
-
-        if resultado.get('success'):
-            # Preparar datos para el recibo
-            datos_recibo = {
-                'cliente': resultado.get('cliente_nombre', 'Cliente'),
-                'telefono': resultado.get('cliente_telefono', ''),
-                'fecha': datetime.now().strftime('%d/%m/%Y %H:%M'),
-                'productos': resultado.get('productos', []),
-                'total': float(resultado.get('total_venta', 0)),
-                'tasa': float(resultado.get('tasa_venta', 0)),
-                'tasa_actual': float(resultado.get('tasa_aplicada', tasa_actual)),
-                'tipo': 'CRÉDITO',
-                'saldo_pendiente': float(resultado.get('saldo_pendiente', 0)),
-                'monto_pagado': float(monto)
-            }
-
-            # Generar recibo
-            try:
-                img_bytes = generar_recibo_profesional(datos_recibo)
-                
-                return send_file(
-                    img_bytes,
-                    mimetype='image/png',
-                    as_attachment=False,
-                    download_name=f"recibo_pago_{id_venta}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        # Buscar producto
+        buscar_producto = st.text_input("Buscar producto")
+        if buscar_producto:
+            productos = buscar_producto_por_descripcion(buscar_producto)
+            if productos:
+                producto_seleccionado = st.selectbox(
+                    "Seleccionar producto",
+                    productos,
+                    format_func=lambda x: f"{x['descripcion']} - Stock: {x.get('cantidad', 0)}"
                 )
-            except Exception as e:
-                print(f"Error generando recibo: {e}")
-                # Si falla el recibo, igual retornar éxito
-                return jsonify({
-                    'success': True, 
-                    'mensaje': resultado.get('mensaje', 'Pago registrado exitosamente'),
-                    'sin_recibo': True
-                }), 200
+                
+                if producto_seleccionado:
+                    cantidad = st.number_input("Cantidad", min_value=1, step=1)
+                    if st.button("➕ Agregar al carrito"):
+                        st.session_state.carrito.append({
+                            'id': producto_seleccionado['id'],
+                            'descripcion': producto_seleccionado['descripcion'],
+                            'cantidad': cantidad,
+                            'precio_usd': producto_seleccionado.get('costo', 0)
+                        })
+                        st.success(f"Agregado: {producto_seleccionado['descripcion']} x{cantidad}")
+        
+        # Mostrar carrito
+        if st.session_state.carrito:
+            st.subheader("🛒 Carrito de compra")
+            df_carrito = pd.DataFrame(st.session_state.carrito)
+            st.dataframe(df_carrito[['descripcion', 'cantidad', 'precio_usd']], use_container_width=True)
+            
+            total_usd = sum(item['cantidad'] * item['precio_usd'] for item in st.session_state.carrito)
+            total_bs = total_usd * tasa_actual.get('bcv_usd', 55.0)
+            
+            st.metric("Total USD", f"${total_usd:,.2f}")
+            st.metric("Total Bs", f"Bs {total_bs:,.2f}")
+            
+            if st.button("🗑️ Vaciar carrito"):
+                st.session_state.carrito = []
+                st.rerun()
+    
+    # Registrar venta
+    if st.button("✅ Registrar Venta", type="primary"):
+        if not id_cliente:
+            st.error("Debe seleccionar o crear un cliente")
+        elif not st.session_state.carrito:
+            st.error("Debe agregar productos al carrito")
         else:
-            return jsonify(resultado), 400
+            # Preparar productos para la venta
+            productos_venta = [
+                {
+                    "id_producto": item['id'],
+                    "cantidad": item['cantidad'],
+                    "precio_usd": item['precio_usd']
+                }
+                for item in st.session_state.carrito
+            ]
+            
+            credito = st.checkbox("Venta a crédito")
+            
+            resultado = registrar_venta(id_cliente, productos_venta, credito)
+            
+            if resultado.get('success'):
+                st.success(f"✅ Venta registrada exitosamente. Total: Bs {resultado.get('total', 0):,.2f}")
+                
+                # Generar recibo
+                if st.button("📄 Ver recibo"):
+                    datos_recibo = {
+                        'cliente': resultado.get('cliente_nombre', 'Cliente'),
+                        'telefono': '',
+                        'fecha': datetime.now().strftime('%d/%m/%Y'),
+                        'productos': productos_venta,
+                        'total': resultado.get('total', 0),
+                        'tasa': tasa_actual.get('bcv_usd', 55.0),
+                        'tasa_actual': tasa_actual.get('bcv_usd', 55.0),
+                        'tipo': 'CRÉDITO' if credito else 'CONTADO',
+                        'saldo_pendiente': resultado.get('total', 0) if credito else 0
+                    }
+                    try:
+                        img_bytes = generar_recibo_profesional(datos_recibo)
+                        st.image(img_bytes, caption="Recibo de venta")
+                    except:
+                        st.warning("No se pudo generar el recibo")
+                
+                # Limpiar carrito
+                st.session_state.carrito = []
+            else:
+                st.error(f"❌ Error: {resultado.get('error')}")
 
-    except Exception as e:
-        print(f"❌ Error en pago de crédito: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# ========== API: CRÉDITOS (Versión PostgreSQL) ==========
-
-@app.route('/api/creditos/pagar-parcial', methods=['POST'])
-def api_pagar_credito_parcial():
-    """Registra un pago parcial de un crédito - Versión PostgreSQL"""
-    try:
-        data = request.json
-        id_venta = data.get('id_venta')
-        monto = data.get('monto')
-        observacion = data.get('observacion', '')
+# ========== CLIENTES ==========
+elif opcion == "👥 Clientes":
+    st.header("👥 Gestión de Clientes")
+    
+    tab1, tab2, tab3 = st.tabs(["📋 Lista de Clientes", "➕ Nuevo Cliente", "🔍 Buscar Cliente"])
+    
+    with tab1:
+        try:
+            clientes = get_clients()
+            if clientes:
+                df_clientes = pd.DataFrame(clientes)
+                st.dataframe(df_clientes, use_container_width=True)
+                
+                # Opción para editar (simplificada)
+                cliente_id_editar = st.number_input("ID del cliente a editar", min_value=1, step=1)
+                nuevo_nombre = st.text_input("Nuevo nombre")
+                nuevo_telefono = st.text_input("Nuevo teléfono")
+                if st.button("Actualizar Cliente"):
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE clientes SET nombre = %s, telefono = %s WHERE id = %s", 
+                                 (nuevo_nombre, nuevo_telefono, cliente_id_editar))
+                    conn.commit()
+                    conn.close()
+                    st.success("Cliente actualizado")
+                    st.rerun()
+            else:
+                st.info("No hay clientes registrados")
+        except Exception as e:
+            st.error(f"Error cargando clientes: {e}")
+    
+    with tab2:
+        nombre = st.text_input("Nombre completo*")
+        telefono = st.text_input("Teléfono")
+        direccion = st.text_area("Dirección")
         
-        # Validaciones
-        if not id_venta:
-            return jsonify({'success': False, 'error': 'ID de venta requerido'}), 400
+        if st.button("Registrar Cliente", type="primary"):
+            if nombre:
+                resultado = add_client_validado(nombre, telefono, direccion)
+                if resultado['success']:
+                    st.success("✅ Cliente registrado exitosamente")
+                else:
+                    st.error(f"❌ Error: {resultado.get('error')}")
+            else:
+                st.error("El nombre es requerido")
+    
+    with tab3:
+        busqueda = st.text_input("Buscar por nombre o teléfono")
+        if busqueda:
+            clientes_encontrados = buscar_cliente_por_nombre(busqueda) or buscar_cliente_por_telefono(busqueda)
+            if clientes_encontrados:
+                if isinstance(clientes_encontrados, dict):
+                    clientes_encontrados = [clientes_encontrados]
+                st.dataframe(pd.DataFrame(clientes_encontrados), use_container_width=True)
+            else:
+                st.warning("No se encontraron clientes")
+
+# ========== PRODUCTOS ==========
+elif opcion == "📦 Productos":
+    st.header("📦 Gestión de Productos")
+    
+    tab1, tab2 = st.tabs(["📋 Lista de Productos", "➕ Nuevo Producto"])
+    
+    with tab1:
+        try:
+            productos = get_products()
+            if productos:
+                df_productos = pd.DataFrame(productos)
+                st.dataframe(df_productos, use_container_width=True)
+                
+                # Reponer stock
+                st.subheader("Reponer Stock")
+                producto_id = st.number_input("ID del producto", min_value=1, step=1)
+                cantidad = st.number_input("Cantidad a agregar", min_value=1, step=1)
+                costo = st.number_input("Costo unitario (opcional)", min_value=0.0, step=0.01)
+                
+                if st.button("Reponer Stock"):
+                    resultado = reponer_stock(producto_id, cantidad, costo if costo > 0 else None)
+                    if resultado.get('success'):
+                        st.success(resultado.get('message'))
+                        st.rerun()
+                    else:
+                        st.error(resultado.get('error'))
+            else:
+                st.info("No hay productos registrados")
+        except Exception as e:
+            st.error(f"Error cargando productos: {e}")
+    
+    with tab2:
+        descripcion = st.text_input("Descripción del producto*")
+        costo = st.number_input("Costo unitario (Bs)", min_value=0.0, step=0.01)
+        stock = st.number_input("Stock inicial", min_value=0, step=1)
         
-        if not monto or float(monto) <= 0:
-            return jsonify({'success': False, 'error': 'Monto debe ser mayor a 0'}), 400
-        
-        resultado = pagar_credito_parcial(int(id_venta), float(monto), observacion)
-        return jsonify(resultado)
-        
-    except Exception as e:
-        print(f"❌ Error en pago parcial: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        if st.button("Registrar Producto", type="primary"):
+            if descripcion:
+                resultado = add_product(descripcion, costo, stock)
+                if resultado.get('success'):
+                    st.success("✅ Producto registrado exitosamente")
+                else:
+                    st.error(f"❌ Error: {resultado.get('error')}")
+            else:
+                st.error("La descripción es requerida")
 
-
-@app.route('/api/creditos/historial/<int:id_venta>', methods=['GET'])
-def api_historial_pagos(id_venta):
-    """Obtiene el historial de pagos de un crédito - Versión PostgreSQL"""
-    try:
-        resultado = obtener_historial_pagos(id_venta)
-        return jsonify(resultado)
-    except Exception as e:
-        print(f"❌ Error en historial de pagos: {str(e)}")
-        return jsonify({'error': str(e), 'historial': []}), 500
-
-
-@app.route('/api/creditos/nota-debito/<int:id_venta>', methods=['GET'])
-def api_generar_nota_debito(id_venta):
-    """Genera nota de débito para un crédito - Versión PostgreSQL"""
-    try:
-        resultado = generar_nota_debito(id_venta)
-        return jsonify(resultado)
-    except Exception as e:
-        print(f"❌ Error generando nota de débito: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/api/creditos/estado/<int:id_venta>', methods=['GET'])
-def api_estado_credito(id_venta):
-    """Obtiene el estado detallado de un crédito - Versión PostgreSQL"""
-    try:
-        resultado = obtener_estado_credito(id_venta)
-        if resultado:
-            return jsonify(resultado)
-        else:
-            return jsonify({'error': 'Crédito no encontrado'}), 404
-    except Exception as e:
-        print(f"❌ Error obteniendo estado del crédito: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/creditos/reporte', methods=['GET'])
-def api_reporte_creditos():
-    """Genera reporte general de todos los créditos - Versión PostgreSQL"""
+# ========== CRÉDITOS ==========
+elif opcion == "💳 Créditos":
+    st.header("💳 Gestión de Créditos")
+    
     try:
         creditos = ventas_con_retraso()
-        total_deuda = sum(float(c.get('saldo_pendiente', 0)) for c in creditos if c.get('saldo_pendiente'))
         
-        return jsonify({
-            'success': True,
-            'total_creditos': len(creditos),
-            'total_deuda_pendiente': total_deuda,
-            'creditos': creditos
-        })
+        if creditos:
+            st.subheader("📋 Créditos Pendientes")
+            
+            for credito in creditos:
+                with st.expander(f"Venta #{credito.get('id_venta')} - Cliente: {credito.get('cliente_nombre', 'N/A')}"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.metric("Total Deuda", f"Bs {credito.get('total_venta', 0):,.2f}")
+                        st.metric("Saldo Pendiente", f"Bs {credito.get('saldo_pendiente', 0):,.2f}", 
+                                 delta=f"{credito.get('porcentaje_pagado', 0):.1f}% pagado")
+                    
+                    with col2:
+                        st.metric("Fecha Venta", credito.get('fecha_venta', 'N/A')[:10])
+                        st.metric("Tasa Aplicada", f"Bs {credito.get('tasa', 0):,.2f}")
+                    
+                    # Pago de crédito
+                    monto_pago = st.number_input(f"Monto a pagar (Venta #{credito.get('id_venta')})", 
+                                                min_value=0.0, step=100.0, key=f"pago_{credito.get('id_venta')}")
+                    
+                    if st.button(f"Registrar Pago", key=f"btn_{credito.get('id_venta')}"):
+                        if monto_pago > 0:
+                            resultado = pagar_credito_con_tasa(
+                                credito.get('id_venta'), 
+                                monto_pago, 
+                                f"Pago registrado en Streamlit",
+                                tasa_actual.get('bcv_usd', 55.0)
+                            )
+                            if resultado.get('success'):
+                                st.success(f"✅ Pago registrado exitosamente. Nuevo saldo: Bs {resultado.get('saldo_pendiente', 0):,.2f}")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Error: {resultado.get('error')}")
+                        else:
+                            st.warning("Ingrese un monto válido")
+        else:
+            st.info("No hay créditos pendientes")
+    
     except Exception as e:
-        print(f"❌ Error en reporte de créditos: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        st.error(f"Error cargando créditos: {e}")
 
-
-
-
-# ========== INICIAR SERVIDOR ==========
-#if __name__ == '__main__':
-#    port = int(os.environ.get("PORT", 5000))
-#    app.run(host='0.0.0.0', port=port, debug=False)
+# ========== REPORTES ==========
+elif opcion == "📊 Reportes":
+    st.header("📊 Reportes y Estadísticas")
     
+    tipo_reporte = st.selectbox(
+        "Tipo de Reporte",
+        ["Ventas por período", "Productos más vendidos", "Estado de créditos"]
+    )
     
-if __name__ == '__main__':
-    # Reducir el uso de memoria
-    port = int(os.environ.get("PORT", 5000))
-   # Para producción en Render
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    if tipo_reporte == "Ventas por período":
+        fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=30))
+        fecha_fin = st.date_input("Fecha fin", datetime.now())
+        
+        if st.button("Generar Reporte"):
+            try:
+                resultado = reporte_por_rango(
+                    fecha_inicio.strftime('%Y-%m-%d'),
+                    fecha_fin.strftime('%Y-%m-%d'),
+                    'dia',
+                    'todas'
+                )
+                
+                if resultado.get('success') and resultado.get('datos'):
+                    df = pd.DataFrame(resultado['datos'])
+                    st.dataframe(df, use_container_width=True)
+                    
+                    # Gráfico
+                    fig = px.bar(df, x='fecha', y='total', title='Ventas por día')
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.metric("Total Ventas", f"Bs {resultado.get('total_general', 0):,.2f}")
+                    st.metric("Total USD", f"${resultado.get('total_usd', 0):,.2f}")
+                else:
+                    st.info("No hay datos en el período seleccionado")
+            except Exception as e:
+                st.error(f"Error generando reporte: {e}")
+    
+    elif tipo_reporte == "Productos más vendidos":
+        try:
+            reporte = reporte_produto()
+            if reporte:
+                df = pd.DataFrame(reporte)
+                st.dataframe(df, use_container_width=True)
+                
+                fig = px.bar(df.head(10), x='descripcion', y='cantidad_vendida', 
+                            title='Top 10 Productos más vendidos')
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error cargando reporte: {e}")
+    
+    elif tipo_reporte == "Estado de créditos":
+        creditos = ventas_con_retraso()
+        if creditos:
+            df = pd.DataFrame(creditos)
+            st.dataframe(df, use_container_width=True)
+            
+            total_deuda = sum(c.get('saldo_pendiente', 0) for c in creditos)
+            st.metric("Total Deuda en Créditos", f"Bs {total_deuda:,.2f}")
+        else:
+            st.info("No hay créditos registrados")
+
+# ========== CONFIGURACIÓN ==========
+elif opcion == "⚙️ Configuración":
+    st.header("⚙️ Configuración del Sistema")
+    
+    st.subheader("Actualizar Tasa de Cambio")
+    tasa_manual = st.number_input("Tasa USD a Bs", min_value=0.0, value=55.0, step=0.50)
+    
+    if st.button("Actualizar Tasa"):
+        # Aquí implementarías la lógica para guardar la tasa
+        # Por ahora solo mostramos un mensaje
+        st.success(f"Tasa actualizada a Bs {tasa_manual:.2f} (simulado)")
+    
+    st.subheader("Respaldo de Base de Datos")
+    if st.button("Exportar Datos (CSV)"):
+        # Implementar exportación a CSV
+        st.info("Función de exportación en desarrollo")
+    
+    st.subheader("Información del Sistema")
+    st.write(f"Versión: 1.0.0")
+    st.write(f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+# Footer en sidebar
+st.sidebar.markdown("---")
+st.sidebar.caption(f"© 2024 Sistema de Ventas\nÚltima conexión: {datetime.now().strftime('%H:%M:%S')}")
