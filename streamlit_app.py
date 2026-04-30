@@ -1,475 +1,526 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 from datetime import datetime, timedelta
 import io
 from PIL import Image
+import traceback
+import os
+from supabase import create_client, Client
 
-# Importar tu lógica existente
-from database import init_db, get_clients, get_productos as get_products, add_client, add_product, reponer_stock, buscar_producto_por_descripcion, buscar_cliente_por_telefono, buscar_cliente_por_nombre, add_client_validado, get_connection
-from generar_recibo import generar_recibo_imagen
-from generar_recibo_profesional import generar_recibo_profesional
-from ventas_logic import (
-    registrar_venta,
-    pagar_credito_parcial,
-    ventas_con_retraso,
-    reporte_ventas,
-    reporte_produto,
-    obtener_tasa_actual,
-    obtener_historial_pagos,
-    reporte_por_rango,
-    obtener_creditos_agrupados,
-    pagar_credito_con_tasa
-)
+# Configuración de Supabase
+def init_supabase():
+    """Inicializa cliente de Supabase"""
+    try:
+        # Intentar obtener de secrets de Streamlit Cloud
+        if hasattr(st, 'secrets') and 'supabase' in st.secrets:
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["key"]
+        else:
+            # Para desarrollo local
+            url = os.getenv("SUPABASE_URL", "tu_url_aqui")
+            key = os.getenv("SUPABASE_KEY", "tu_key_aqui")
+        
+        return create_client(url, key)
+    except Exception as e:
+        st.error(f"Error conectando a Supabase: {e}")
+        return None
 
-# Configuración de la página
+# Inicializar cliente
+supabase = init_supabase()
+
+# ========== FUNCIONES DE BASE DE DATOS ==========
+def get_clients():
+    """Obtener todos los clientes"""
+    try:
+        response = supabase.table('clientes').select('*').execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error obteniendo clientes: {e}")
+        return []
+
+def get_products():
+    """Obtener todos los productos"""
+    try:
+        response = supabase.table('productos').select('*, inventario(cantidad, costo)').execute()
+        productos = []
+        for p in response.data:
+            producto = {
+                'id': p['id'],
+                'descripcion': p['descripcion'],
+                'activo': p['activo'],
+                'cantidad': p.get('inventario', [{}])[0].get('cantidad', 0) if p.get('inventario') else 0,
+                'costo': p.get('inventario', [{}])[0].get('costo', 0) if p.get('inventario') else 0
+            }
+            productos.append(producto)
+        return productos
+    except Exception as e:
+        st.error(f"Error obteniendo productos: {e}")
+        return []
+
+def add_client_validado(nombre, telefono, direccion):
+    """Agregar cliente validado"""
+    try:
+        # Verificar si ya existe
+        existing = supabase.table('clientes').select('*').eq('nombre', nombre).execute()
+        if existing.data:
+            return {'success': False, 'error': 'El cliente ya existe'}
+        
+        # Insertar nuevo cliente
+        data = {
+            'nombre': nombre,
+            'telefono': telefono if telefono else None,
+            'direccion': direccion if direccion else None
+        }
+        response = supabase.table('clientes').insert(data).execute()
+        
+        if response.data:
+            return {'success': True, 'id': response.data[0]['id'], 'cliente': response.data[0]}
+        return {'success': False, 'error': 'No se pudo crear el cliente'}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+def buscar_cliente_por_nombre(nombre):
+    """Buscar cliente por nombre"""
+    try:
+        response = supabase.table('clientes').select('*').ilike('nombre', f'%{nombre}%').limit(10).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error buscando cliente: {e}")
+        return []
+
+def buscar_cliente_por_telefono(telefono):
+    """Buscar cliente por teléfono"""
+    try:
+        response = supabase.table('clientes').select('*').eq('telefono', telefono).execute()
+        return response.data[0] if response.data else None
+    except Exception as e:
+        st.error(f"Error buscando cliente: {e}")
+        return None
+
+def buscar_producto_por_descripcion(descripcion):
+    """Buscar producto por descripción"""
+    try:
+        response = supabase.table('productos').select('*, inventario(cantidad, costo)').ilike('descripcion', f'%{descripcion}%').limit(10).execute()
+        
+        productos = []
+        for p in response.data:
+            producto = {
+                'id': p['id'],
+                'descripcion': p['descripcion'],
+                'cantidad': p.get('inventario', [{}])[0].get('cantidad', 0) if p.get('inventario') else 0,
+                'costo': p.get('inventario', [{}])[0].get('costo', 0) if p.get('inventario') else 0
+            }
+            productos.append(producto)
+        return productos
+    except Exception as e:
+        st.error(f"Error buscando producto: {e}")
+        return []
+
+def registrar_venta_supabase(id_cliente, productos, credito=False):
+    """Registrar venta usando Supabase"""
+    try:
+        # Obtener tasa actual
+        tasa_response = obtener_tasa_actual()
+        tasa = tasa_response.get('bcv_usd', 55.0)
+        
+        # Calcular total
+        total = 0
+        detalles = []
+        
+        for prod in productos:
+            precio_usd = prod.get('precio_usd', 0)
+            cantidad = prod.get('cantidad', 0)
+            subtotal_usd = precio_usd * cantidad
+            subtotal_bs = subtotal_usd * tasa
+            
+            total += subtotal_bs
+            
+            detalles.append({
+                'id_producto': prod['id_producto'],
+                'cantidad': cantidad,
+                'precio_unitario': precio_usd,
+                'subtotal': subtotal_bs
+            })
+        
+        # Insertar venta
+        venta_data = {
+            'id_cliente': id_cliente,
+            'fecha_venta': datetime.now().isoformat(),
+            'total': total,
+            'tasa': tasa,
+            'credito': credito,
+            'pagado': False if credito else True,
+            'cancelada': False,
+            'saldo_pendiente': total if credito else 0
+        }
+        
+        venta_response = supabase.table('ventas').insert(venta_data).execute()
+        
+        if not venta_response.data:
+            return {'success': False, 'error': 'No se pudo crear la venta'}
+        
+        id_venta = venta_response.data[0]['id']
+        
+        # Insertar detalles
+        for detalle in detalles:
+            detalle['id_venta'] = id_venta
+            supabase.table('detalles_venta').insert(detalle).execute()
+            
+            # Actualizar stock
+            producto_actual = supabase.table('inventario').select('cantidad').eq('id_producto', detalle['id_producto']).execute()
+            if producto_actual.data:
+                nuevo_stock = producto_actual.data[0]['cantidad'] - detalle['cantidad']
+                supabase.table('inventario').update({'cantidad': nuevo_stock}).eq('id_producto', detalle['id_producto']).execute()
+        
+        # Obtener nombre del cliente
+        cliente_response = supabase.table('clientes').select('nombre').eq('id', id_cliente).execute()
+        cliente_nombre = cliente_response.data[0]['nombre'] if cliente_response.data else 'Cliente'
+        
+        return {
+            'success': True,
+            'id_venta': id_venta,
+            'total': total,
+            'cliente_nombre': cliente_nombre,
+            'tasa': tasa
+        }
+        
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+def obtener_tasa_actual():
+    """Obtener tasa de cambio actual"""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        
+        # Intentar obtener del BCV
+        url = "http://www.bcv.org.ve/"
+        response = requests.get(url, timeout=5)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Buscar tasa USD (esto puede variar)
+        dolar_element = soup.find('div', {'id': 'dolar'})
+        if dolar_element:
+            tasa = float(dolar_element.find('strong').text.replace(',', '.'))
+            return {'bcv_usd': tasa, 'bcv_eur': tasa * 1.05}
+    except:
+        pass
+    
+    # Tasa por defecto
+    return {'bcv_usd': 55.0, 'bcv_eur': 57.75}
+
+def ventas_con_retraso():
+    """Obtener créditos vencidos"""
+    try:
+        response = supabase.table('ventas').select('*, clientes(nombre, telefono)').eq('credito', True).eq('pagado', False).execute()
+        
+        creditos = []
+        for v in response.data:
+            saldo = v.get('saldo_pendiente', v.get('total', 0))
+            if saldo > 0:
+                creditos.append({
+                    'id_venta': v['id'],
+                    'cliente_nombre': v['clientes']['nombre'] if v.get('clientes') else 'N/A',
+                    'cliente_telefono': v['clientes'].get('telefono') if v.get('clientes') else '',
+                    'total_venta': v['total'],
+                    'saldo_pendiente': saldo,
+                    'fecha_venta': v['fecha_venta'][:10] if v.get('fecha_venta') else '',
+                    'tasa': v.get('tasa', 0),
+                    'porcentaje_pagado': ((v['total'] - saldo) / v['total'] * 100) if v['total'] > 0 else 0
+                })
+        return creditos
+    except Exception as e:
+        st.error(f"Error obteniendo créditos: {e}")
+        return []
+
+def pagar_credito_con_tasa(id_venta, monto, observacion, tasa_actual):
+    """Registrar pago de crédito"""
+    try:
+        # Obtener venta actual
+        venta = supabase.table('ventas').select('*').eq('id', id_venta).execute()
+        if not venta.data:
+            return {'success': False, 'error': 'Venta no encontrada'}
+        
+        venta_data = venta.data[0]
+        saldo_actual = venta_data.get('saldo_pendiente', venta_data['total'])
+        monto_pagado_anterior = venta_data['total'] - saldo_actual
+        
+        nuevo_saldo = saldo_actual - monto
+        
+        # Insertar pago
+        pago_data = {
+            'id_venta': id_venta,
+            'monto_pagado': monto,
+            'tasa_pago': tasa_actual,
+            'observacion': observacion,
+            'fecha_pago': datetime.now().isoformat()
+        }
+        supabase.table('pagos_credito').insert(pago_data).execute()
+        
+        # Actualizar venta
+        update_data = {
+            'saldo_pendiente': max(0, nuevo_saldo),
+            'pagado': nuevo_saldo <= 0
+        }
+        supabase.table('ventas').update(update_data).eq('id', id_venta).execute()
+        
+        # Obtener datos del cliente
+        cliente = supabase.table('clientes').select('nombre, telefono').eq('id', venta_data['id_cliente']).execute()
+        
+        return {
+            'success': True,
+            'mensaje': 'Pago registrado exitosamente',
+            'saldo_pendiente': max(0, nuevo_saldo),
+            'cliente_nombre': cliente.data[0]['nombre'] if cliente.data else 'Cliente',
+            'cliente_telefono': cliente.data[0].get('telefono') if cliente.data else '',
+            'total_venta': venta_data['total'],
+            'tasa_venta': venta_data.get('tasa', 0),
+            'tasa_aplicada': tasa_actual
+        }
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+# ========== INTERFAZ DE STREAMLIT ==========
+
 st.set_page_config(
     page_title="Sistema de Ventas",
     page_icon="💰",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Inicializar base de datos
-try:
-    init_db()
-    st.success("✅ Conectado a la base de datos")
-except Exception as e:
-    st.error(f"❌ Error de conexión: {e}")
-
-# Título principal
 st.title("💰 Sistema de Ventas Profesional")
 st.markdown("---")
 
-# Sidebar para navegación
+# Sidebar
 st.sidebar.title("📋 Menú Principal")
 opcion = st.sidebar.selectbox(
     "Seleccione una opción",
-    ["🏠 Dashboard", "🛍️ Registrar Venta", "👥 Clientes", "📦 Productos", 
-     "💳 Créditos", "📊 Reportes", "⚙️ Configuración"]
+    ["🏠 Dashboard", "🛍️ Registrar Venta", "👥 Clientes", "📦 Productos", "💳 Créditos"]
 )
 
-# Mostrar tasa actual en sidebar
+# Tasa actual
 tasa_actual = obtener_tasa_actual()
 st.sidebar.info(f"💵 Tasa BCV: Bs {tasa_actual.get('bcv_usd', 55.0):.2f} / USD")
 
+# Verificar conexión a Supabase
+if supabase is None:
+    st.error("❌ No se pudo conectar a Supabase. Verifica la configuración.")
+    st.stop()
+
 # ========== DASHBOARD ==========
 if opcion == "🏠 Dashboard":
-    st.header("📈 Dashboard de Ventas")
+    st.header("📈 Dashboard")
     
-    col1, col2, col3, col4 = st.columns(4)
-    
-    # Obtener datos para el dashboard
     try:
-        conn = get_connection()
+        # Estadísticas
+        col1, col2, col3 = st.columns(3)
         
-        # Total ventas hoy
-        cursor = conn.cursor()
-        cursor.execute("SELECT COALESCE(SUM(total), 0) FROM ventas WHERE DATE(fecha_venta) = CURRENT_DATE")
-        ventas_hoy = cursor.fetchone()[0] or 0
+        clientes = get_clients()
+        productos = get_products()
+        creditos = ventas_con_retraso()
         
-        # Total clientes
-        cursor.execute("SELECT COUNT(*) FROM clientes")
-        total_clientes = cursor.fetchone()[0]
+        col1.metric("👥 Clientes", len(clientes))
+        col2.metric("📦 Productos", len(productos))
+        col3.metric("💳 Créditos Pendientes", len(creditos))
         
-        # Total productos
-        cursor.execute("SELECT COUNT(*) FROM productos WHERE activo = true")
-        total_productos = cursor.fetchone()[0]
+        if creditos:
+            total_deuda = sum(c.get('saldo_pendiente', 0) for c in creditos)
+            st.metric("💰 Total en Créditos", f"Bs {total_deuda:,.2f}")
         
-        # Créditos pendientes
-        cursor.execute("SELECT COALESCE(SUM(saldo_pendiente), 0) FROM ventas WHERE credito = true AND pagado = false")
-        creditos_pendientes = cursor.fetchone()[0] or 0
-        
-        conn.close()
-        
-        col1.metric("💰 Ventas Hoy", f"Bs {ventas_hoy:,.2f}")
-        col2.metric("👥 Clientes", total_clientes)
-        col3.metric("📦 Productos", total_productos)
-        col4.metric("💳 Créditos Pendientes", f"Bs {creditos_pendientes:,.2f}")
-        
+        # Últimas ventas
+        st.subheader("📊 Últimas Ventas")
+        ventas = supabase.table('ventas').select('*, clientes(nombre)').order('fecha_venta', desc=True).limit(10).execute()
+        if ventas.data:
+            df = pd.DataFrame(ventas.data)
+            df['fecha'] = pd.to_datetime(df['fecha_venta']).dt.strftime('%d/%m/%Y')
+            df['cliente'] = df.apply(lambda x: x['clientes']['nombre'] if x.get('clientes') else 'N/A', axis=1)
+            st.dataframe(df[['id', 'fecha', 'cliente', 'total', 'credito']], use_container_width=True)
     except Exception as e:
         st.error(f"Error cargando dashboard: {e}")
-    
-    # Gráfico de ventas últimos 7 días
-    st.subheader("📊 Ventas Últimos 7 Días")
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DATE(fecha_venta) as fecha, SUM(total) as total
-            FROM ventas
-            WHERE fecha_venta >= CURRENT_DATE - INTERVAL '7 days'
-            GROUP BY DATE(fecha_venta)
-            ORDER BY fecha
-        """)
-        datos = cursor.fetchall()
-        conn.close()
-        
-        if datos:
-            df = pd.DataFrame(datos, columns=['fecha', 'total'])
-            fig = px.line(df, x='fecha', y='total', title='Ventas Diarias')
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos de ventas en los últimos 7 días")
-    except Exception as e:
-        st.error(f"Error cargando gráfico: {e}")
 
 # ========== REGISTRAR VENTA ==========
 elif opcion == "🛍️ Registrar Venta":
     st.header("🛍️ Nueva Venta")
     
-    col1, col2 = st.columns([1, 1])
+    # Buscar cliente
+    st.subheader("👤 Cliente")
+    buscar_cliente = st.text_input("Buscar cliente por nombre")
     
-    with col1:
-        # Buscar cliente
-        st.subheader("👤 Cliente")
-        buscar_cliente = st.text_input("Buscar cliente por nombre o teléfono")
-        
-        if buscar_cliente:
-            cliente_encontrado = buscar_cliente_por_nombre(buscar_cliente) or buscar_cliente_por_telefono(buscar_cliente)
-            if cliente_encontrado:
-                st.success(f"Cliente seleccionado: {cliente_encontrado['nombre']}")
-                id_cliente = cliente_encontrado['id']
-            else:
-                st.warning("Cliente no encontrado. Complete el formulario para crear uno nuevo:")
-                nombre_nuevo = st.text_input("Nombre del nuevo cliente")
-                telefono_nuevo = st.text_input("Teléfono")
-                if st.button("Registrar Cliente") and nombre_nuevo:
-                    resultado = add_client_validado(nombre_nuevo, telefono_nuevo, "")
-                    if resultado['success']:
-                        st.success("Cliente registrado exitosamente")
-                        id_cliente = resultado.get('id')
-                    else:
-                        st.error(resultado.get('error'))
+    id_cliente = None
+    if buscar_cliente:
+        clientes = buscar_cliente_por_nombre(buscar_cliente)
+        if clientes:
+            cliente_seleccionado = st.selectbox(
+                "Seleccionar cliente",
+                clientes,
+                format_func=lambda x: f"{x['nombre']} - {x.get('telefono', 'Sin teléfono')}"
+            )
+            if cliente_seleccionado:
+                id_cliente = cliente_seleccionado['id']
+                st.success(f"Cliente: {cliente_seleccionado['nombre']}")
         else:
-            id_cliente = None
+            st.warning("Cliente no encontrado")
+            nombre_nuevo = st.text_input("Nombre del nuevo cliente")
+            telefono_nuevo = st.text_input("Teléfono")
+            if st.button("Registrar Cliente") and nombre_nuevo:
+                resultado = add_client_validado(nombre_nuevo, telefono_nuevo, "")
+                if resultado['success']:
+                    st.success("Cliente registrado")
+                    id_cliente = resultado['id']
+                else:
+                    st.error(resultado.get('error'))
     
-    with col2:
-        # Agregar productos
-        st.subheader("📦 Productos")
+    # Carrito de compras
+    st.subheader("📦 Productos")
+    
+    if 'carrito' not in st.session_state:
+        st.session_state.carrito = []
+    
+    # Buscar producto
+    buscar_producto = st.text_input("Buscar producto")
+    if buscar_producto:
+        productos = buscar_producto_por_descripcion(buscar_producto)
+        if productos:
+            producto_seleccionado = st.selectbox(
+                "Seleccionar producto",
+                productos,
+                format_func=lambda x: f"{x['descripcion']} - Stock: {x.get('cantidad', 0)}"
+            )
+            
+            if producto_seleccionado:
+                cantidad = st.number_input("Cantidad", min_value=1, step=1, value=1)
+                if st.button("➕ Agregar"):
+                    st.session_state.carrito.append({
+                        'id_producto': producto_seleccionado['id'],
+                        'descripcion': producto_seleccionado['descripcion'],
+                        'cantidad': cantidad,
+                        'precio_usd': producto_seleccionado.get('costo', 0)
+                    })
+                    st.success("Producto agregado")
+                    st.rerun()
+    
+    # Mostrar carrito
+    if st.session_state.carrito:
+        st.subheader("🛒 Carrito")
+        df_carrito = pd.DataFrame(st.session_state.carrito)
+        st.dataframe(df_carrito[['descripcion', 'cantidad', 'precio_usd']], use_container_width=True)
         
-        if 'carrito' not in st.session_state:
+        total_usd = sum(item['cantidad'] * item['precio_usd'] for item in st.session_state.carrito)
+        total_bs = total_usd * tasa_actual.get('bcv_usd', 55.0)
+        
+        st.metric("Total USD", f"${total_usd:,.2f}")
+        st.metric("Total Bs", f"Bs {total_bs:,.2f}")
+        
+        if st.button("🗑️ Vaciar carrito"):
             st.session_state.carrito = []
-        
-        # Buscar producto
-        buscar_producto = st.text_input("Buscar producto")
-        if buscar_producto:
-            productos = buscar_producto_por_descripcion(buscar_producto)
-            if productos:
-                producto_seleccionado = st.selectbox(
-                    "Seleccionar producto",
-                    productos,
-                    format_func=lambda x: f"{x['descripcion']} - Stock: {x.get('cantidad', 0)}"
-                )
-                
-                if producto_seleccionado:
-                    cantidad = st.number_input("Cantidad", min_value=1, step=1)
-                    if st.button("➕ Agregar al carrito"):
-                        st.session_state.carrito.append({
-                            'id': producto_seleccionado['id'],
-                            'descripcion': producto_seleccionado['descripcion'],
-                            'cantidad': cantidad,
-                            'precio_usd': producto_seleccionado.get('costo', 0)
-                        })
-                        st.success(f"Agregado: {producto_seleccionado['descripcion']} x{cantidad}")
-        
-        # Mostrar carrito
-        if st.session_state.carrito:
-            st.subheader("🛒 Carrito de compra")
-            df_carrito = pd.DataFrame(st.session_state.carrito)
-            st.dataframe(df_carrito[['descripcion', 'cantidad', 'precio_usd']], use_container_width=True)
-            
-            total_usd = sum(item['cantidad'] * item['precio_usd'] for item in st.session_state.carrito)
-            total_bs = total_usd * tasa_actual.get('bcv_usd', 55.0)
-            
-            st.metric("Total USD", f"${total_usd:,.2f}")
-            st.metric("Total Bs", f"Bs {total_bs:,.2f}")
-            
-            if st.button("🗑️ Vaciar carrito"):
-                st.session_state.carrito = []
-                st.rerun()
+            st.rerun()
     
     # Registrar venta
     if st.button("✅ Registrar Venta", type="primary"):
         if not id_cliente:
-            st.error("Debe seleccionar o crear un cliente")
+            st.error("Debe seleccionar un cliente")
         elif not st.session_state.carrito:
-            st.error("Debe agregar productos al carrito")
+            st.error("Debe agregar productos")
         else:
-            # Preparar productos para la venta
+            credito = st.checkbox("Venta a crédito")
+            
             productos_venta = [
                 {
-                    "id_producto": item['id'],
-                    "cantidad": item['cantidad'],
-                    "precio_usd": item['precio_usd']
+                    'id_producto': item['id_producto'],
+                    'cantidad': item['cantidad'],
+                    'precio_usd': item['precio_usd']
                 }
                 for item in st.session_state.carrito
             ]
             
-            credito = st.checkbox("Venta a crédito")
+            resultado = registrar_venta_supabase(id_cliente, productos_venta, credito)
             
-            resultado = registrar_venta(id_cliente, productos_venta, credito)
-            
-            if resultado.get('success'):
-                st.success(f"✅ Venta registrada exitosamente. Total: Bs {resultado.get('total', 0):,.2f}")
-                
-                # Generar recibo
-                if st.button("📄 Ver recibo"):
-                    datos_recibo = {
-                        'cliente': resultado.get('cliente_nombre', 'Cliente'),
-                        'telefono': '',
-                        'fecha': datetime.now().strftime('%d/%m/%Y'),
-                        'productos': productos_venta,
-                        'total': resultado.get('total', 0),
-                        'tasa': tasa_actual.get('bcv_usd', 55.0),
-                        'tasa_actual': tasa_actual.get('bcv_usd', 55.0),
-                        'tipo': 'CRÉDITO' if credito else 'CONTADO',
-                        'saldo_pendiente': resultado.get('total', 0) if credito else 0
-                    }
-                    try:
-                        img_bytes = generar_recibo_profesional(datos_recibo)
-                        st.image(img_bytes, caption="Recibo de venta")
-                    except:
-                        st.warning("No se pudo generar el recibo")
-                
-                # Limpiar carrito
+            if resultado['success']:
+                st.success(f"✅ Venta registrada - Total: Bs {resultado['total']:,.2f}")
                 st.session_state.carrito = []
+                st.balloons()
             else:
                 st.error(f"❌ Error: {resultado.get('error')}")
 
 # ========== CLIENTES ==========
 elif opcion == "👥 Clientes":
-    st.header("👥 Gestión de Clientes")
+    st.header("👥 Clientes")
     
-    tab1, tab2, tab3 = st.tabs(["📋 Lista de Clientes", "➕ Nuevo Cliente", "🔍 Buscar Cliente"])
+    tab1, tab2 = st.tabs(["📋 Lista", "➕ Nuevo"])
     
     with tab1:
-        try:
-            clientes = get_clients()
-            if clientes:
-                df_clientes = pd.DataFrame(clientes)
-                st.dataframe(df_clientes, use_container_width=True)
-                
-                # Opción para editar (simplificada)
-                cliente_id_editar = st.number_input("ID del cliente a editar", min_value=1, step=1)
-                nuevo_nombre = st.text_input("Nuevo nombre")
-                nuevo_telefono = st.text_input("Nuevo teléfono")
-                if st.button("Actualizar Cliente"):
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE clientes SET nombre = %s, telefono = %s WHERE id = %s", 
-                                 (nuevo_nombre, nuevo_telefono, cliente_id_editar))
-                    conn.commit()
-                    conn.close()
-                    st.success("Cliente actualizado")
-                    st.rerun()
-            else:
-                st.info("No hay clientes registrados")
-        except Exception as e:
-            st.error(f"Error cargando clientes: {e}")
+        clientes = get_clients()
+        if clientes:
+            df = pd.DataFrame(clientes)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No hay clientes registrados")
     
     with tab2:
-        nombre = st.text_input("Nombre completo*")
+        nombre = st.text_input("Nombre*")
         telefono = st.text_input("Teléfono")
         direccion = st.text_area("Dirección")
         
-        if st.button("Registrar Cliente", type="primary"):
+        if st.button("Registrar"):
             if nombre:
                 resultado = add_client_validado(nombre, telefono, direccion)
                 if resultado['success']:
-                    st.success("✅ Cliente registrado exitosamente")
+                    st.success("Cliente registrado")
+                    st.rerun()
                 else:
-                    st.error(f"❌ Error: {resultado.get('error')}")
+                    st.error(resultado.get('error'))
             else:
-                st.error("El nombre es requerido")
-    
-    with tab3:
-        busqueda = st.text_input("Buscar por nombre o teléfono")
-        if busqueda:
-            clientes_encontrados = buscar_cliente_por_nombre(busqueda) or buscar_cliente_por_telefono(busqueda)
-            if clientes_encontrados:
-                if isinstance(clientes_encontrados, dict):
-                    clientes_encontrados = [clientes_encontrados]
-                st.dataframe(pd.DataFrame(clientes_encontrados), use_container_width=True)
-            else:
-                st.warning("No se encontraron clientes")
+                st.error("Nombre requerido")
 
 # ========== PRODUCTOS ==========
 elif opcion == "📦 Productos":
-    st.header("📦 Gestión de Productos")
+    st.header("📦 Productos")
     
-    tab1, tab2 = st.tabs(["📋 Lista de Productos", "➕ Nuevo Producto"])
-    
-    with tab1:
-        try:
-            productos = get_products()
-            if productos:
-                df_productos = pd.DataFrame(productos)
-                st.dataframe(df_productos, use_container_width=True)
-                
-                # Reponer stock
-                st.subheader("Reponer Stock")
-                producto_id = st.number_input("ID del producto", min_value=1, step=1)
-                cantidad = st.number_input("Cantidad a agregar", min_value=1, step=1)
-                costo = st.number_input("Costo unitario (opcional)", min_value=0.0, step=0.01)
-                
-                if st.button("Reponer Stock"):
-                    resultado = reponer_stock(producto_id, cantidad, costo if costo > 0 else None)
-                    if resultado.get('success'):
-                        st.success(resultado.get('message'))
-                        st.rerun()
-                    else:
-                        st.error(resultado.get('error'))
-            else:
-                st.info("No hay productos registrados")
-        except Exception as e:
-            st.error(f"Error cargando productos: {e}")
-    
-    with tab2:
-        descripcion = st.text_input("Descripción del producto*")
-        costo = st.number_input("Costo unitario (Bs)", min_value=0.0, step=0.01)
-        stock = st.number_input("Stock inicial", min_value=0, step=1)
-        
-        if st.button("Registrar Producto", type="primary"):
-            if descripcion:
-                resultado = add_product(descripcion, costo, stock)
-                if resultado.get('success'):
-                    st.success("✅ Producto registrado exitosamente")
-                else:
-                    st.error(f"❌ Error: {resultado.get('error')}")
-            else:
-                st.error("La descripción es requerida")
+    productos = get_products()
+    if productos:
+        df = pd.DataFrame(productos)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No hay productos registrados")
 
 # ========== CRÉDITOS ==========
 elif opcion == "💳 Créditos":
-    st.header("💳 Gestión de Créditos")
+    st.header("💳 Créditos Pendientes")
     
-    try:
-        creditos = ventas_con_retraso()
-        
-        if creditos:
-            st.subheader("📋 Créditos Pendientes")
-            
-            for credito in creditos:
-                with st.expander(f"Venta #{credito.get('id_venta')} - Cliente: {credito.get('cliente_nombre', 'N/A')}"):
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.metric("Total Deuda", f"Bs {credito.get('total_venta', 0):,.2f}")
-                        st.metric("Saldo Pendiente", f"Bs {credito.get('saldo_pendiente', 0):,.2f}", 
-                                 delta=f"{credito.get('porcentaje_pagado', 0):.1f}% pagado")
-                    
-                    with col2:
-                        st.metric("Fecha Venta", credito.get('fecha_venta', 'N/A')[:10])
-                        st.metric("Tasa Aplicada", f"Bs {credito.get('tasa', 0):,.2f}")
-                    
-                    # Pago de crédito
-                    monto_pago = st.number_input(f"Monto a pagar (Venta #{credito.get('id_venta')})", 
-                                                min_value=0.0, step=100.0, key=f"pago_{credito.get('id_venta')}")
-                    
-                    if st.button(f"Registrar Pago", key=f"btn_{credito.get('id_venta')}"):
-                        if monto_pago > 0:
-                            resultado = pagar_credito_con_tasa(
-                                credito.get('id_venta'), 
-                                monto_pago, 
-                                f"Pago registrado en Streamlit",
-                                tasa_actual.get('bcv_usd', 55.0)
-                            )
-                            if resultado.get('success'):
-                                st.success(f"✅ Pago registrado exitosamente. Nuevo saldo: Bs {resultado.get('saldo_pendiente', 0):,.2f}")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ Error: {resultado.get('error')}")
+    creditos = ventas_con_retraso()
+    
+    if creditos:
+        for credito in creditos:
+            with st.expander(f"Venta #{credito['id_venta']} - {credito['cliente_nombre']}"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.metric("Total", f"Bs {credito['total_venta']:,.2f}")
+                    st.metric("Saldo Pendiente", f"Bs {credito['saldo_pendiente']:,.2f}")
+                
+                with col2:
+                    st.metric("Fecha", credito['fecha_venta'])
+                    st.metric("Tasa", f"Bs {credito.get('tasa', 0):,.2f}")
+                
+                monto_pago = st.number_input("Monto a pagar", min_value=0.0, step=100.0, key=f"pago_{credito['id_venta']}")
+                
+                if st.button("Registrar Pago", key=f"btn_{credito['id_venta']}"):
+                    if monto_pago > 0:
+                        resultado = pagar_credito_con_tasa(
+                            credito['id_venta'],
+                            monto_pago,
+                            "Pago desde Streamlit",
+                            tasa_actual.get('bcv_usd', 55.0)
+                        )
+                        if resultado['success']:
+                            st.success(f"✅ Pago registrado. Nuevo saldo: Bs {resultado['saldo_pendiente']:,.2f}")
+                            st.rerun()
                         else:
-                            st.warning("Ingrese un monto válido")
-        else:
-            st.info("No hay créditos pendientes")
-    
-    except Exception as e:
-        st.error(f"Error cargando créditos: {e}")
+                            st.error(f"Error: {resultado.get('error')}")
+                    else:
+                        st.warning("Ingrese un monto válido")
+    else:
+        st.info("No hay créditos pendientes")
 
-# ========== REPORTES ==========
-elif opcion == "📊 Reportes":
-    st.header("📊 Reportes y Estadísticas")
-    
-    tipo_reporte = st.selectbox(
-        "Tipo de Reporte",
-        ["Ventas por período", "Productos más vendidos", "Estado de créditos"]
-    )
-    
-    if tipo_reporte == "Ventas por período":
-        fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=30))
-        fecha_fin = st.date_input("Fecha fin", datetime.now())
-        
-        if st.button("Generar Reporte"):
-            try:
-                resultado = reporte_por_rango(
-                    fecha_inicio.strftime('%Y-%m-%d'),
-                    fecha_fin.strftime('%Y-%m-%d'),
-                    'dia',
-                    'todas'
-                )
-                
-                if resultado.get('success') and resultado.get('datos'):
-                    df = pd.DataFrame(resultado['datos'])
-                    st.dataframe(df, use_container_width=True)
-                    
-                    # Gráfico
-                    fig = px.bar(df, x='fecha', y='total', title='Ventas por día')
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    st.metric("Total Ventas", f"Bs {resultado.get('total_general', 0):,.2f}")
-                    st.metric("Total USD", f"${resultado.get('total_usd', 0):,.2f}")
-                else:
-                    st.info("No hay datos en el período seleccionado")
-            except Exception as e:
-                st.error(f"Error generando reporte: {e}")
-    
-    elif tipo_reporte == "Productos más vendidos":
-        try:
-            reporte = reporte_produto()
-            if reporte:
-                df = pd.DataFrame(reporte)
-                st.dataframe(df, use_container_width=True)
-                
-                fig = px.bar(df.head(10), x='descripcion', y='cantidad_vendida', 
-                            title='Top 10 Productos más vendidos')
-                st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error cargando reporte: {e}")
-    
-    elif tipo_reporte == "Estado de créditos":
-        creditos = ventas_con_retraso()
-        if creditos:
-            df = pd.DataFrame(creditos)
-            st.dataframe(df, use_container_width=True)
-            
-            total_deuda = sum(c.get('saldo_pendiente', 0) for c in creditos)
-            st.metric("Total Deuda en Créditos", f"Bs {total_deuda:,.2f}")
-        else:
-            st.info("No hay créditos registrados")
-
-# ========== CONFIGURACIÓN ==========
-elif opcion == "⚙️ Configuración":
-    st.header("⚙️ Configuración del Sistema")
-    
-    st.subheader("Actualizar Tasa de Cambio")
-    tasa_manual = st.number_input("Tasa USD a Bs", min_value=0.0, value=55.0, step=0.50)
-    
-    if st.button("Actualizar Tasa"):
-        # Aquí implementarías la lógica para guardar la tasa
-        # Por ahora solo mostramos un mensaje
-        st.success(f"Tasa actualizada a Bs {tasa_manual:.2f} (simulado)")
-    
-    st.subheader("Respaldo de Base de Datos")
-    if st.button("Exportar Datos (CSV)"):
-        # Implementar exportación a CSV
-        st.info("Función de exportación en desarrollo")
-    
-    st.subheader("Información del Sistema")
-    st.write(f"Versión: 1.0.0")
-    st.write(f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-
-# Footer en sidebar
 st.sidebar.markdown("---")
-st.sidebar.caption(f"© 2024 Sistema de Ventas\nÚltima conexión: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption(f"Sistema de Ventas\n{datetime.now().strftime('%d/%m/%Y %H:%M')}")
