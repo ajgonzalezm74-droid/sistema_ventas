@@ -13,56 +13,67 @@ class ExchangeProvider:
         self.ultima_actualizacion = None
         
     def get_all_rates(self, force_update=False):
-        """Obtiene tasas de cambio - CORREGIDO: actualiza siempre cuando se force o expiró"""
+        """Obtiene tasas de cambio actualizadas"""
         
-        # Si no se fuerza actualización, intentar usar caché
+        # Si no se fuerza actualización, intentar usar caché (2 horas)
         if not force_update:
             tasa_guardada = self.get_last_valid_rate()
             if tasa_guardada and tasa_guardada > 0:
                 ultima_fecha = self.get_last_rate_date()
                 if ultima_fecha:
                     horas_transcurridas = (datetime.now() - ultima_fecha).total_seconds() / 3600
-                    if horas_transcurridas < 16:
-                        print(f"📊 Usando tasa guardada: {tasa_guardada} (de hace {horas_transcurridas:.1f} horas)")
+                    if horas_transcurridas < 2:  # Caché de 2 horas
+                        print(f"📊 Usando caché: {tasa_guardada}")
                         return {
                             "bcv_usd": tasa_guardada,
-                            "bcv_eur": round(tasa_guardada * 1.05, 2)
+                            "bcv_eur": round(tasa_guardada * 1.08, 2)
                         }
         
-        # Siempre consultar API cuando se fuerza o no hay caché válida
+        # Consultar API
         print("🔄 Obteniendo tasa actual desde APIs...")
-        tasa_api = self.get_usd_rate_from_api()
+        tasa_nueva = self.get_usd_rate_from_api()
         
-        # Si API falla, usar última guardada
-        if tasa_api == 0:
-            tasa_api = self.get_last_valid_rate()
-            if tasa_api == 0:
-                tasa_api = 55.0
-                print(f"⚠️ Usando tasa por defecto: {tasa_api}")
-            else:
-                print(f"⚠️ Usando última tasa válida guardada: {tasa_api}")
+        if tasa_nueva <= 0:
+            tasa_nueva = self.get_last_valid_rate()
+            if tasa_nueva <= 0:
+                tasa_nueva = 60.0
+                print(f"⚠️ Usando tasa por defecto: {tasa_nueva}")
         
-        # Guardar SIEMPRE que la tasa sea diferente a la última guardada
-        if tasa_api > 0:
-            ultima_guardada = self.get_last_valid_rate()
-            # Comparación con tolerancia para evitar guardar cambios mínimos
-            if ultima_guardada == 0 or abs(ultima_guardada - tasa_api) > 0.01:
-                self.save_rates_to_db(tasa_api)
-                print(f"✅ Nueva tasa guardada: {tasa_api}")
+        # Guardar SIEMPRE que la tasa sea DIFERENTE (sin importar la fecha)
+        if tasa_nueva > 0:
+            tasa_actual_bd = self.get_last_valid_rate()
+            # Comparación con tolerancia
+            if tasa_actual_bd == 0 or abs(tasa_actual_bd - tasa_nueva) > 0.05:
+                self.save_rates_to_db(tasa_nueva)
+                print(f"✅ Tasa guardada: {tasa_nueva} (anterior: {tasa_actual_bd})")
             else:
-                print(f"📊 Tasa sin cambios: {tasa_api}")
+                print(f"📊 Tasa sin cambios: {tasa_nueva}")
+        else:
+            print("❌ No se pudo obtener tasa válida")
         
         return {
-            "bcv_usd": tasa_api,
-            "bcv_eur": round(tasa_api * 1.05, 2)
+            "bcv_usd": tasa_nueva,
+            "bcv_eur": round(tasa_nueva * 1.08, 2)
         }
     
     def get_usd_rate_from_api(self):
-        """Obtiene tasa USD/VES desde APIs múltiples"""
+        """Obtiene tasa USD/VES desde APIs"""
         apis = [
-            {"url": "https://api.exchangerate-api.com/v4/latest/USD", "path": ["rates", "VES"], "name": "ExchangeRate-API"},
-            {"url": "https://v6.exchangerate-api.com/v6/latest/USD", "path": ["conversion_rates", "VES"], "name": "ExchangeRate-API v6"},
-            {"url": "https://api.coinbase.com/v2/exchange-rates?currency=USD", "path": ["data", "rates", "VES"], "name": "Coinbase"}
+            {
+                "url": "https://pydolarve.org/api/v1/dollar?page=bcv",
+                "path": ["monitors", "bcv", "price"],
+                "name": "PyDolarVZLA (BCV)"
+            },
+            {
+                "url": "https://api.exchangerate-api.com/v4/latest/USD",
+                "path": ["rates", "VES"],
+                "name": "ExchangeRate-API"
+            },
+            {
+                "url": "https://v6.exchangerate-api.com/v6/latest/USD",
+                "path": ["conversion_rates", "VES"],
+                "name": "ExchangeRate-API v6"
+            }
         ]
         
         for api in apis:
@@ -76,10 +87,10 @@ class ExchangeProvider:
                     value = value.get(key, {})
                 if value and float(value) > 0:
                     tasa = round(float(value), 2)
-                    print(f"✅ Tasa obtenida de {api['name']}: {tasa}")
+                    print(f"✅ Tasa obtenida: {tasa}")
                     return tasa
             except Exception as e:
-                print(f"❌ Error con {api['name']}: {str(e)[:50]}")
+                print(f"❌ Error: {str(e)[:50]}")
                 continue
         
         print("❌ No se pudo obtener tasa de ninguna API")
@@ -103,29 +114,33 @@ class ExchangeProvider:
             return 0
     
     def get_last_rate_date(self):
-        """Obtiene la fecha de la última tasa desde PostgreSQL"""
+        """Obtiene la fecha de la última tasa"""
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT fecha FROM tasas WHERE moneda = 'bcv_usd' ORDER BY fecha DESC LIMIT 1")
+            cursor.execute("""
+                SELECT fecha FROM tasas 
+                WHERE moneda = 'bcv_usd' 
+                ORDER BY fecha DESC LIMIT 1
+            """)
             row = cursor.fetchone()
             conn.close()
             return row[0] if row else None
         except Exception as e:
-            print(f"❌ Error obteniendo fecha de tasa: {e}")
+            print(f"❌ Error: {e}")
             return None
     
     def save_rates_to_db(self, tasa_usd):
-        """Guarda tasas en PostgreSQL - CORREGIDO: sin bloqueo por fecha"""
+        """Guarda tasas - SIN BLOQUEO POR FECHA"""
         try:
             if tasa_usd <= 0:
-                print("❌ No se guarda tasa en cero")
+                print("❌ Tasa inválida")
                 return False
             
             conn = get_connection()
             cursor = conn.cursor()
             
-            # Verificar si la ÚLTIMA tasa guardada es EXACTAMENTE igual
+            # SOLO verificar el último registro (SIN filtro de fecha)
             cursor.execute("""
                 SELECT valor FROM tasas 
                 WHERE moneda = 'bcv_usd' 
@@ -133,26 +148,33 @@ class ExchangeProvider:
             """)
             ultima = cursor.fetchone()
             
-            # Comparación exacta para evitar duplicados IDÉNTICOS
+            # Solo evitar duplicados IDÉNTICOS
             if ultima and ultima[0] == tasa_usd:
-                print(f"📊 Tasa {tasa_usd} idéntica a la última guardada, omitiendo duplicado")
+                print(f"📊 Tasa {tasa_usd} ya es la última, omitiendo")
                 conn.close()
                 return False
             
-            # Insertar nueva tasa (SIN restricción de fecha)
+            # Guardar nueva tasa (permite múltiples el mismo día)
             cursor.execute(
                 "INSERT INTO tasas (moneda, valor) VALUES (%s, %s)",
                 ("bcv_usd", tasa_usd)
             )
             cursor.execute(
                 "INSERT INTO tasas (moneda, valor) VALUES (%s, %s)",
-                ("bcv_eur", round(tasa_usd * 1.05, 2))
+                ("bcv_eur", round(tasa_usd * 1.08, 2))
             )
             
             conn.commit()
             conn.close()
-            print(f"💾 Tasa guardada en BD: {tasa_usd}")
+            print(f"💾 Tasa guardada: {tasa_usd}")
             return True
         except Exception as e:
-            print(f"❌ Error guardando tasas: {e}")
+            print(f"❌ Error guardando: {e}")
             return False
+
+
+# Función global para obtener tasa actualizada
+def get_current_rate(force_update=False):
+    provider = ExchangeProvider()
+    rates = provider.get_all_rates(force_update=force_update)
+    return rates["bcv_usd"]
