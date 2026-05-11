@@ -872,7 +872,8 @@ def obtener_historial_pagos(id_venta):
 def obtener_tasa_actual():
     """Obtiene la tasa de cambio actual"""
     try:
-        tasas = exchange.get_all_rates(force_update=False)
+        #tasas = exchange.get_all_rates(force_update=False)
+        tasas = exchange.get_all_rates(force_update=True)
         return {"bcv_usd": tasas.get("bcv_usd", 55.0), "bcv_eur": tasas.get("bcv_eur", 57.75), "fecha": datetime.now().isoformat()}
     except Exception as e:
         print(f"Error en obtener_tasa_actual: {e}")
