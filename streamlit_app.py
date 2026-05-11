@@ -61,7 +61,8 @@ opcion = st.sidebar.selectbox(
 
 # Mostrar tasa actual en sidebar
 try:
-    tasa_actual = obtener_tasa_actual()
+    #tasa_actual = obtener_tasa_actual()
+    tasa_actual = obtener_tasa_actual(force_update=True) 
     st.sidebar.info(f"💵 Tasa BCV: Bs {tasa_actual.get('bcv_usd', 55.0):.2f} / USD")
 except:
     st.sidebar.warning("No se pudo obtener la tasa actual")
