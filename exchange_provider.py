@@ -13,15 +13,15 @@ class ExchangeProvider:
         self.ultima_actualizacion = None
         
     def get_all_rates(self, force_update=False):
-        """Obtiene tasas de cambio solo si es necesario usando PostgreSQL"""
+        """Obtiene tasas de cambio - CORREGIDO: actualiza solo si cambia"""
         
+        # Caso 1: Usar caché si no se fuerza actualización y la tasa es reciente
         if not force_update:
             tasa_guardada = self.get_last_valid_rate()
-            if tasa_guardada and tasa_guardada > 0:
+            if tasa_guardada > 0:
                 ultima_fecha = self.get_last_rate_date()
                 if ultima_fecha:
                     horas_transcurridas = (datetime.now() - ultima_fecha).total_seconds() / 3600
-                    # Si la tasa tiene menos de 16 horas, usarla
                     if horas_transcurridas < 16:
                         print(f"📊 Usando tasa guardada: {tasa_guardada} (de hace {horas_transcurridas:.1f} horas)")
                         return {
@@ -29,32 +29,36 @@ class ExchangeProvider:
                             "bcv_eur": round(tasa_guardada * 1.05, 2)
                         }
                     else:
-                        print(f"🔄 Tasa expirada (hace {horas_transcurridas:.1f} horas), actualizando...")
+                        print(f"🔄 Caché expirada (hace {horas_transcurridas:.1f} horas), consultando API...")
         
-        print("🔄 Obteniendo tasa actual desde APIs...")
-        tasa = self.get_usd_rate_from_api()
+        # Caso 2: Consultar API (si force_update=True o caché expirada o no hay tasa)
+        print("🔄 Consultando tasa actual desde APIs...")
+        tasa_nueva = self.get_usd_rate_from_api()
         
-        # Si falla la API, usar la última guardada
-        if tasa == 0:
-            tasa = self.get_last_valid_rate()
-            if tasa == 0:
-                tasa = 55.0
-                print(f"⚠️ Usando tasa por defecto: {tasa}")
+        # Si falla la API, usar la última tasa válida de BD
+        if tasa_nueva <= 0:
+            tasa_nueva = self.get_last_valid_rate()
+            if tasa_nueva <= 0:
+                # Último recurso: tasa por defecto (debes actualizar este valor)
+                tasa_nueva = 55.0
+                print(f"⚠️ Usando tasa por defecto: {tasa_nueva}")
             else:
-                print(f"⚠️ Usando última tasa válida guardada: {tasa}")
+                print(f"⚠️ API falló, usando última tasa válida: {tasa_nueva}")
         
-        # Guardar la nueva tasa si cambió significativamente
-        if tasa > 0:
-            ultima_guardada = self.get_last_valid_rate()
-            if abs(ultima_guardada - tasa) > 0.01:
-                self.save_rates_to_db(tasa)
-                print(f"✅ Nueva tasa guardada: {tasa}")
+        # Caso 3: Guardar SOLO si la tasa cambió significativamente
+        if tasa_nueva > 0:
+            tasa_actual_bd = self.get_last_valid_rate()
+            
+            # Comparación exacta para evitar duplicados
+            if tasa_actual_bd is None or abs(tasa_actual_bd - tasa_nueva) > 0.01:
+                self.save_rates_to_db(tasa_nueva)
+                print(f"✅ Tasa actualizada: {tasa_nueva} (anterior: {tasa_actual_bd})")
             else:
-                print(f"📊 Tasa sin cambios: {tasa}")
+                print(f"📊 Tasa sin cambios significativos: {tasa_nueva}")
         
         return {
-            "bcv_usd": tasa,
-            "bcv_eur": round(tasa * 1.05, 2)
+            "bcv_usd": tasa_nueva,
+            "bcv_eur": round(tasa_nueva * 1.05, 2)
         }
     
     def get_usd_rate_from_api(self):
@@ -116,7 +120,7 @@ class ExchangeProvider:
             return None
     
     def save_rates_to_db(self, tasa_usd):
-        """Guarda tasas en PostgreSQL (solo si cambió)"""
+        """Guarda tasas en PostgreSQL SOLO si no existe exactamente igual"""
         try:
             if tasa_usd <= 0:
                 print("❌ No se guarda tasa en cero")
@@ -125,17 +129,17 @@ class ExchangeProvider:
             conn = get_connection()
             cursor = conn.cursor()
             
-            # Verificar si ya se guardó hoy una tasa similar
+            # Verificar si la última tasa guardada es IDÉNTICA
             cursor.execute("""
                 SELECT valor FROM tasas 
                 WHERE moneda = 'bcv_usd' 
-                AND DATE(fecha) = CURRENT_DATE
                 ORDER BY fecha DESC LIMIT 1
             """)
             ultima = cursor.fetchone()
             
-            if ultima and abs(ultima[0] - tasa_usd) < 0.01:
-                print("📊 Tasa idéntica ya guardada hoy, omitiendo")
+            # Comparación exacta para evitar duplicados
+            if ultima and ultima[0] == tasa_usd:
+                print(f"📊 Tasa {tasa_usd} ya existe como último registro, omitiendo duplicado")
                 conn.close()
                 return False
             
@@ -151,7 +155,7 @@ class ExchangeProvider:
             
             conn.commit()
             conn.close()
-            print(f"💾 Nueva tasa guardada en Supabase: {tasa_usd}")
+            print(f"💾 Nuevas tasas guardadas - USD: {tasa_usd}, EUR: {round(tasa_usd * 1.05, 2)}")
             return True
         except Exception as e:
             print(f"❌ Error guardando tasas: {e}")
