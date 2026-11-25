@@ -1,39 +1,37 @@
+# ==============================================================================
+# SISTEMA DE VENTAS PROFESIONAL - INTERFAZ PRINCIPAL (STREAMLIT)
+# ==============================================================================
+# Este archivo contiene toda la interfaz de usuario, la navegación y la lógica
+# de presentación (frontend). Se conecta con database.py y ventas_logic.py.
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-import io
 import traceback
 import urllib.parse
+import re
 
-# IMPORTAR TODAS LAS FUNCIONES ORIGINALES
+# --- IMPORTACIÓN DE LÓGICA DE NEGOCIO Y BASE DE DATOS ---
 from database import (
     get_connection, init_db, get_clients, get_productos, 
     add_client_validado, add_product, reponer_stock,
     buscar_cliente_por_nombre, buscar_cliente_por_telefono,
     buscar_productos_por_descripcion,
-    obtener_datos_bancarios, guardar_datos_bancarios, eliminar_banco # NUEVAS FUNCIONES
+    # Funciones bancarias
+    obtener_datos_bancarios, guardar_datos_bancarios, eliminar_banco 
 )
 
 from ventas_logic import (
-    registrar_venta,
-    pagar_credito,
-    pagar_credito_parcial,
-    cancelar_venta,
-    ventas_con_retraso,
-    reporte_ventas,
-    reporte_produto,
-    obtener_tasa_actual,
-    obtener_historial_pagos,
-    generar_nota_debito,
-    obtener_estado_credito,
-    reporte_por_rango,
-    obtener_creditos_agrupados,
-    pagar_credito_con_tasa
+    registrar_venta, pagar_credito, pagar_credito_parcial,
+    cancelar_venta, ventas_con_retraso, reporte_ventas,
+    reporte_produto, obtener_tasa_actual, reporte_por_rango
 )
 
 from generar_recibo_profesional import generar_recibo_profesional
 
-# Configuración de la página
+# ==============================================================================
+# CONFIGURACIÓN INICIAL
+# ==============================================================================
 st.set_page_config(
     page_title="Sistema de Ventas",
     page_icon="💰",
@@ -41,24 +39,26 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inicializar base de datos
+# Inicializar base de datos (crea tablas si no existen)
 try:
     init_db()
-    st.success("✅ Conectado a la base de datos PostgreSQL")
+    # st.success("✅ Conectado a la base de datos PostgreSQL") # Descomentar si se necesita ver
 except Exception as e:
-    st.error(f"❌ Error de conexión: {e}")
+    st.error(f"❌ Error de conexión a la base de datos: {e}")
     st.stop()
 
 # Título principal
 st.title("💰 Sistema de Ventas Profesional")
 st.markdown("---")
 
-# Sidebar para navegación
+# ==============================================================================
+# MENÚ LATERAL (SIDEBAR)
+# ==============================================================================
 st.sidebar.title("📋 Menú Principal")
 opcion = st.sidebar.selectbox(
     "Seleccione una opción",
     ["🏠 Dashboard", "🛍️ Registrar Venta", "👥 Clientes", "📦 Productos", 
-     "💳 Créditos", "📊 Reportes", "⚙️ Configuración Bancaria"] # <--- NUEVA OPCIÓN
+     "💳 Créditos", "📊 Reportes", "⚙️ Configuración Bancaria"]
 )
 
 # Mostrar tasa actual en sidebar
@@ -69,7 +69,9 @@ except:
     st.sidebar.warning("No se pudo obtener la tasa actual")
     tasa_actual = {'bcv_usd': 55.0}
 
-# ========== DASHBOARD ==========
+# ==============================================================================
+# SECCIÓN 1: DASHBOARD
+# ==============================================================================
 if opcion == "🏠 Dashboard":
     st.header("📈 Dashboard de Ventas")
     
@@ -79,15 +81,19 @@ if opcion == "🏠 Dashboard":
         conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT COALESCE(SUM(total), 0) FROM ventas WHERE DATE(fecha_venta) = CURRENT_DATE")
+        # Ventas del día
+        cursor.execute("SELECT COALESCE(SUM(total), 0) FROM ventas WHERE DATE(fecha_venta) = CURRENT_DATE AND cancelada = FALSE")
         ventas_hoy = cursor.fetchone()[0] or 0
         
+        # Total Clientes
         clientes = get_clients()
         total_clientes = len(clientes)
         
+        # Total Productos
         productos = get_productos()
         total_productos = len(productos)
         
+        # Créditos pendientes
         cursor.execute("SELECT COALESCE(SUM(saldo_pendiente), 0) FROM ventas WHERE credito = true AND pagado = false AND cancelada = false")
         creditos_pendientes = cursor.fetchone()[0] or 0
         
@@ -106,6 +112,7 @@ if opcion == "🏠 Dashboard":
                    CASE WHEN v.credito = true THEN 'Crédito' ELSE 'Contado' END as tipo
             FROM ventas v
             JOIN clientes c ON v.id_cliente = c.id
+            WHERE v.cancelada = FALSE
             ORDER BY v.fecha_venta DESC
             LIMIT 10
         """)
@@ -122,7 +129,9 @@ if opcion == "🏠 Dashboard":
     except Exception as e:
         st.error(f"Error cargando dashboard: {e}")
 
-# ========== REGISTRAR VENTA ==========
+# ==============================================================================
+# SECCIÓN 2: REGISTRAR VENTA
+# ==============================================================================
 elif opcion == "🛍️ Registrar Venta":
     st.header("🛍️ Nueva Venta")
     
@@ -131,9 +140,9 @@ elif opcion == "🛍️ Registrar Venta":
     
     col1, col2 = st.columns([1, 1])
     
+    # --- COLUMNA CLIENTE ---
     with col1:
         st.subheader("👤 Cliente")
-        
         buscar_cliente = st.text_input("Buscar cliente por nombre o teléfono")
         
         id_cliente = None
@@ -156,6 +165,7 @@ elif opcion == "🛍️ Registrar Venta":
                 cliente_seleccionado = cliente
                 st.success(f"Cliente encontrado: {cliente['nombre']}")
         
+        # Si el cliente no existe, permitir crearlo
         if not id_cliente and buscar_cliente:
             st.warning("Cliente no encontrado")
             nombre_nuevo = st.text_input("Nombre del nuevo cliente*")
@@ -165,17 +175,16 @@ elif opcion == "🛍️ Registrar Venta":
                 if nombre_nuevo:
                     resultado = add_client_validado(nombre_nuevo, telefono_nuevo, "")
                     if resultado['success']:
-                        id_cliente = resultado['id']
-                        st.success(f"Cliente {nombre_nuevo} registrado")
+                        st.success(f"Cliente {nombre_nuevo} registrado. Ya puede buscarlo.")
                         st.rerun()
                     else:
                         st.error(resultado.get('error'))
                 else:
                     st.error("El nombre es requerido")
     
+    # --- COLUMNA PRODUCTOS ---
     with col2:
         st.subheader("📦 Productos")
-        
         buscar_producto = st.text_input("Buscar producto por descripción")
         
         if buscar_producto:
@@ -202,6 +211,7 @@ elif opcion == "🛍️ Registrar Venta":
                         st.success(f"✅ Agregado: {producto_seleccionado['descripcion']} x{cantidad}")
                         st.rerun()
         
+        # Mostrar carrito
         if st.session_state.carrito:
             st.subheader("🛒 Carrito")
             df_carrito = pd.DataFrame(st.session_state.carrito)
@@ -217,6 +227,7 @@ elif opcion == "🛍️ Registrar Venta":
                 st.session_state.carrito = []
                 st.rerun()
     
+    # --- BOTÓN REGISTRAR VENTA ---
     credito = st.checkbox("Venta a crédito")
     
     if st.button("✅ Registrar Venta", type="primary", use_container_width=True):
@@ -243,6 +254,7 @@ elif opcion == "🛍️ Registrar Venta":
                 st.info(f"**Total:** Bs {resultado.get('total_bs', 0):,.2f}")
                 st.info(f"**Tipo:** {'Crédito' if credito else 'Contado'}")
                 
+                # Generar recibo
                 try:
                     datos_recibo = {
                         'cliente': cliente_seleccionado['nombre'] if cliente_seleccionado else 'Cliente',
@@ -264,7 +276,9 @@ elif opcion == "🛍️ Registrar Venta":
             else:
                 st.error(f"❌ Error: {resultado.get('error')}")
 
-# ========== CLIENTES ==========
+# ==============================================================================
+# SECCIÓN 3: CLIENTES
+# ==============================================================================
 elif opcion == "👥 Clientes":
     st.header("👥 Gestión de Clientes")
     
@@ -297,7 +311,9 @@ elif opcion == "👥 Clientes":
             else:
                 st.error("El nombre es requerido")
 
-# ========== PRODUCTOS ==========
+# ==============================================================================
+# SECCIÓN 4: PRODUCTOS
+# ==============================================================================
 elif opcion == "📦 Productos":
     st.header("📦 Gestión de Productos")
     
@@ -343,52 +359,56 @@ elif opcion == "📦 Productos":
             else:
                 st.error("La descripción es requerida")
 
-# ========== CRÉDITOS ==========
+# ==============================================================================
+# SECCIÓN 5: CRÉDITOS (INCLUYE QR DE PAGO MÓVIL)
+# ==============================================================================
 elif opcion == "💳 Créditos":
     st.header("💳 Gestión de Créditos")
     
     try:
         creditos = ventas_con_retraso()
-        mis_bancos = obtener_datos_bancarios() # Lista de bancos
-        
-        lista_clientes = get_clients()
-        dict_clientes = {c['id']: c['nombre'] for c in lista_clientes} if lista_clientes else {}
+        mis_bancos = obtener_datos_bancarios() # Lista de cuentas bancarias guardadas
         
         if creditos:
             # --- AGRUPACIÓN POR CLIENTE ---
             clientes_dict = {}
             for credito in creditos:
-                id_cli = credito.get('id_cliente')
-                nombre_cliente = dict_clientes.get(id_cli, f"Cliente ID {id_cli}")
+                # En ventas_logic.py el nombre del cliente viene en 'cliente_nombre'
+                nombre_cliente = credito.get('cliente_nombre', 'Cliente Desconocido')
                 if nombre_cliente not in clientes_dict:
                     clientes_dict[nombre_cliente] = []
                 clientes_dict[nombre_cliente].append(credito)
             
             st.subheader(f"📋 Créditos Pendientes ({len(creditos)} ventas en total)")
             
+            # --- ITERAR POR CADA CLIENTE ---
             for nombre_cliente, lista_creditos in clientes_dict.items():
                 deuda_total_cliente = sum(float(c.get('saldo_pendiente') or 0) for c in lista_creditos)
                 
                 with st.expander(f"👤 {nombre_cliente} - Deuda Total: Bs {deuda_total_cliente:,.2f} ({len(lista_creditos)} ventas)"):
                     
                     for idx, credito in enumerate(lista_creditos):
-                        credito_id = credito.get('id_venta') or credito.get('id')
+                        credito_id = credito.get('id_venta')
                         if credito_id is None: continue
                         
                         st.markdown(f"### 📄 Venta #{credito_id}")
                         
+                        # --- DATOS DE LA VENTA (Corregidos con ventas_logic) ---
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.metric("Total Original", f"Bs {credito.get('total') or 0:,.2f}")
-                            st.metric("Saldo Pendiente", f"Bs {credito.get('saldo_pendiente') or 0:,.2f}")
+                            # Usamos total_venta y tasa_venta que trae ventas_logic.py
+                            st.metric("Total Original", f"Bs {float(credito.get('total_venta') or 0):,.2f}")
+                            st.metric("Saldo Pendiente", f"Bs {float(credito.get('saldo_pendiente') or 0):,.2f}")
+                            
                             fecha_venta = credito.get('fecha_venta', 'N/A')
                             if fecha_venta and len(str(fecha_venta)) > 10:
                                 fecha_venta = str(fecha_venta)[:10]
                             st.metric("Fecha Venta", fecha_venta)
                         
                         with col2:
-                            st.metric("Tasa Venta", f"Bs {credito.get('tasa') or 0:,.2f}")
-                            st.metric("Tasa Actual", f"Bs {credito.get('tasa_actual') or 0:,.2f}")
+                            st.metric("Tasa Venta", f"Bs {float(credito.get('tasa_venta') or 0):,.2f}")
+                            st.metric("Tasa Actual", f"Bs {float(credito.get('tasa_actual') or 0):,.2f}")
+                            
                             dias = credito.get('dias_retraso') or 0
                             if dias > 0:
                                 st.metric("Días de Retraso", f"🔴 {dias} días")
@@ -399,11 +419,12 @@ elif opcion == "💳 Créditos":
                         
                         saldo = float(credito.get('saldo_pendiente') or 0)
                         
-                        # --- SECCIÓN DE QR DINÁMICO ---
+                        # --- SECCIÓN DE QR DINÁMICO (PAGO MÓVIL) ---
                         if saldo > 0 and mis_bancos:
                             st.markdown("---")
                             st.write("📱 **Generar QR para Pago Móvil**")
                             
+                            # Selector de banco
                             opciones_bancos = {f"{b['banco']} ({b['codigo_banco']})": b for b in mis_bancos}
                             banco_elegido_nombre = st.selectbox(
                                 "Selecciona a qué cuenta quieres que te paguen:", 
@@ -413,7 +434,18 @@ elif opcion == "💳 Créditos":
                             
                             banco_elegido = opciones_bancos[banco_elegido_nombre]
                             
-                            texto_qr = f"{banco_elegido['codigo_banco']}|{banco_elegido['cedula_rif']}|{banco_elegido['telefono']}|{saldo:.2f}"
+                            # Formateo estricto para el estándar de Pago Móvil (Venezuela)
+                            codigo_banco_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['codigo_banco']))[:4]
+                            cedula_limpia = re.sub(r'[^0-9]', '', str(banco_elegido['cedula_rif']))
+                            telefono_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['telefono']))
+                            
+                            # Quitar el 0 inicial del teléfono si lo tiene
+                            if telefono_limpio.startswith('0'):
+                                telefono_limpio = telefono_limpio[1:] 
+                            
+                            # El formato es: Banco, Cedula, Telefono, Monto, Concepto
+                            texto_qr = f"{codigo_banco_limpio},{cedula_limpia},{telefono_limpio},{saldo:.2f},"
+                            
                             texto_qr_encoded = urllib.parse.quote(texto_qr)
                             url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={texto_qr_encoded}"
                             
@@ -423,14 +455,15 @@ elif opcion == "💳 Créditos":
                             with col_info:
                                 st.info(f"""
                                 **Datos para el pago:**
-                                * **Banco:** {banco_elegido['banco']} ({banco_elegido['codigo_banco']})
-                                * **C.I/RIF:** {banco_elegido['cedula_rif']}
-                                * **Teléfono:** {banco_elegido['telefono']}
+                                * **Banco:** {banco_elegido['banco']} ({codigo_banco_limpio})
+                                * **C.I/RIF:** {cedula_limpia}
+                                * **Teléfono:** {telefono_limpio}
                                 * **Monto a pagar:** Bs {saldo:,.2f}
                                 """)
                         elif saldo > 0:
                             st.warning("⚠️ Configura tus cuentas bancarias en el menú lateral para generar el QR.")
 
+                        # --- FORMULARIO DE PAGO ---
                         st.subheader("💰 Registrar Pago")
                         monto_pago = st.number_input(
                             "Monto a pagar", min_value=0.0, max_value=saldo if saldo > 0 else 0.0,
@@ -467,82 +500,9 @@ elif opcion == "💳 Créditos":
         st.error(f"Error cargando créditos: {e}")
         st.code(traceback.format_exc())
 
-# ========== CONFIGURACIÓN BANCARIA ==========
-elif opcion == "⚙️ Configuración Bancaria":
-    st.header("⚙️ Mis Cuentas Bancarias")
-    st.write("Agrega o edita tus cuentas para que tus clientes puedan pagarte automáticamente con un QR.")
-    
-    # Lista de bancos actuales
-    bancos_guardados = obtener_datos_bancarios()
-    
-    tab1, tab2 = st.tabs(["➕ Agregar Cuenta", "✏️ Editar / Eliminar Cuentas"])
-    
-    # --- PESTAÑA 1: AGREGAR ---
-    with tab1:
-        with st.form("form_agregar_banco"):
-            st.subheader("Nueva Cuenta")
-            col1, col2 = st.columns(2)
-            with col1:
-                banco = st.text_input("Nombre del Banco (Ej: Banesco)")
-                codigo_banco = st.text_input("Código del Banco (Ej: 0134)")
-            with col2:
-                cedula_rif = st.text_input("Cédula o RIF")
-                telefono = st.text_input("Teléfono de Pago Móvil")
-            
-            titular = st.text_input("Nombre del Titular")
-            
-            if st.form_submit_button("💾 Guardar Cuenta", type="primary"):
-                if banco and codigo_banco and cedula_rif and telefono:
-                    if guardar_datos_bancarios(banco, codigo_banco, cedula_rif, telefono, titular):
-                        st.success("✅ Cuenta guardada correctamente.")
-                        st.rerun()
-                    else:
-                        st.error("❌ Error al guardar la cuenta.")
-                else:
-                    st.warning("Por favor, llena los campos obligatorios.")
-    
-    # --- PESTAÑA 2: EDITAR / ELIMINAR ---
-    with tab2:
-        if bancos_guardados:
-            st.subheader("Administrar mis Cuentas")
-            
-            # Selector para elegir qué cuenta editar
-            opciones = {f"{b['banco']} ({b['codigo_banco']})": b for b in bancos_guardados}
-            cuenta_sel_nombre = st.selectbox("Selecciona la cuenta a modificar:", list(opciones.keys()))
-            cuenta_sel = opciones[cuenta_sel_nombre]
-            
-            with st.form("form_editar_banco"):
-                col_e1, col_e2 = st.columns(2)
-                with col_e1:
-                    e_banco = st.text_input("Banco", value=cuenta_sel['banco'])
-                    e_codigo = st.text_input("Código", value=cuenta_sel['codigo_banco'])
-                with col_e2:
-                    e_cedula = st.text_input("Cédula/RIF", value=cuenta_sel['cedula_rif'])
-                    e_telefono = st.text_input("Teléfono", value=cuenta_sel['telefono'])
-                
-                e_titular = st.text_input("Titular", value=cuenta_sel['titular'])
-                
-                col_b1, col_b2 = st.columns(2)
-                with col_b1:
-                    if st.form_submit_button("✏️ Actualizar Cuenta", type="primary"):
-                        # Para actualizar, eliminamos la vieja y creamos la nueva
-                        if eliminar_banco(cuenta_sel['id']):
-                            if guardar_datos_bancarios(e_banco, e_codigo, e_cedula, e_telefono, e_titular):
-                                st.success("✅ Cuenta actualizada correctamente.")
-                                st.rerun()
-                            else:
-                                st.error("❌ Error al actualizar la cuenta.")
-                with col_b2:
-                    if st.form_submit_button("🗑️ Inactivar (Eliminar) Cuenta"):
-                        if eliminar_banco(cuenta_sel['id']):
-                            st.success("✅ Cuenta eliminada correctamente.")
-                            st.rerun()
-                        else:
-                            st.error("❌ Error al eliminar la cuenta.")
-        else:
-            st.info("No tienes cuentas guardadas aún. Agrega una en la pestaña anterior.")
-
-# ========== REPORTES ==========
+# ==============================================================================
+# SECCIÓN 6: REPORTES
+# ==============================================================================
 elif opcion == "📊 Reportes":
     st.header("📊 Reportes y Estadísticas")
     
@@ -630,6 +590,82 @@ elif opcion == "📊 Reportes":
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
 
-# Footer
+# ==============================================================================
+# SECCIÓN 7: CONFIGURACIÓN BANCARIA (QR)
+# ==============================================================================
+elif opcion == "⚙️ Configuración Bancaria":
+    st.header("⚙️ Mis Cuentas Bancarias")
+    st.write("Agrega o edita tus cuentas para que tus clientes puedan pagarte automáticamente con un QR.")
+    
+    bancos_guardados = obtener_datos_bancarios()
+    
+    tab1, tab2 = st.tabs(["➕ Agregar Cuenta", "✏️ Editar / Eliminar Cuentas"])
+    
+    # --- PESTAÑA 1: AGREGAR CUENTA ---
+    with tab1:
+        with st.form("form_agregar_banco"):
+            st.subheader("Nueva Cuenta")
+            col1, col2 = st.columns(2)
+            with col1:
+                banco = st.text_input("Nombre del Banco (Ej: Banesco)")
+                codigo_banco = st.text_input("Código del Banco (Ej: 0134)")
+            with col2:
+                cedula_rif = st.text_input("Cédula o RIF")
+                telefono = st.text_input("Teléfono de Pago Móvil")
+            
+            titular = st.text_input("Nombre del Titular")
+            
+            if st.form_submit_button("💾 Guardar Cuenta", type="primary"):
+                if banco and codigo_banco and cedula_rif and telefono:
+                    if guardar_datos_bancarios(banco, codigo_banco, cedula_rif, telefono, titular):
+                        st.success("✅ Cuenta guardada correctamente.")
+                        st.rerun()
+                    else:
+                        st.error("❌ Error al guardar la cuenta.")
+                else:
+                    st.warning("Por favor, llena los campos obligatorios.")
+    
+    # --- PESTAÑA 2: EDITAR / ELIMINAR CUENTA ---
+    with tab2:
+        if bancos_guardados:
+            st.subheader("Administrar mis Cuentas")
+            
+            opciones = {f"{b['banco']} ({b['codigo_banco']})": b for b in bancos_guardados}
+            cuenta_sel_nombre = st.selectbox("Selecciona la cuenta a modificar:", list(opciones.keys()))
+            cuenta_sel = opciones[cuenta_sel_nombre]
+            
+            with st.form("form_editar_banco"):
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    e_banco = st.text_input("Banco", value=cuenta_sel['banco'])
+                    e_codigo = st.text_input("Código", value=cuenta_sel['codigo_banco'])
+                with col_e2:
+                    e_cedula = st.text_input("Cédula/RIF", value=cuenta_sel['cedula_rif'])
+                    e_telefono = st.text_input("Teléfono", value=cuenta_sel['telefono'])
+                
+                e_titular = st.text_input("Titular", value=cuenta_sel['titular'])
+                
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    if st.form_submit_button("✏️ Actualizar Cuenta", type="primary"):
+                        if eliminar_banco(cuenta_sel['id']):
+                            if guardar_datos_bancarios(e_banco, e_codigo, e_cedula, e_telefono, e_titular):
+                                st.success("✅ Cuenta actualizada correctamente.")
+                                st.rerun()
+                            else:
+                                st.error("❌ Error al actualizar la cuenta.")
+                with col_b2:
+                    if st.form_submit_button("🗑️ Inactivar (Eliminar) Cuenta"):
+                        if eliminar_banco(cuenta_sel['id']):
+                            st.success("✅ Cuenta eliminada correctamente.")
+                            st.rerun()
+                        else:
+                            st.error("❌ Error al eliminar la cuenta.")
+        else:
+            st.info("No tienes cuentas guardadas aún. Agrega una en la pestaña anterior.")
+
+# ==============================================================================
+# FOOTER
+# ==============================================================================
 st.sidebar.markdown("---")
 st.sidebar.caption(f"© 2026 Sistema de Ventas\n{datetime.now().strftime('%d/%m/%Y %H:%M')}")
