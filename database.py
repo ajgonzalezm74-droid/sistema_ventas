@@ -6,7 +6,7 @@ from datetime import datetime
 # Para compatibilidad con ventas_logic.py
 DB_NAME = "ventas.db"
 
-# URL CORRECTA del Session Pooler
+# URL CORRECTA del Session Pooler (TU CONEXIÓN A SUPABASE)
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres.hdmothdsswjtfniqvgay:A6f%5BpVeh%23%23.@aws-1-us-east-2.pooler.supabase.com:5432/postgres?sslmode=require')
 
 def get_connection():
@@ -228,7 +228,6 @@ def get_productos():
 def add_product(descripcion, costo, stock=0):
     """Agrega un nuevo producto"""
     try:
-        # Verificar si ya existe
         existente = buscar_producto_por_descripcion(descripcion)
         if existente:
             return {"success": False, "error": f"El producto '{descripcion}' ya existe", "id": existente['id']}
@@ -376,6 +375,66 @@ def buscar_productos_por_descripcion(descripcion):
     except Exception as e:
         print(f"❌ Error buscar_productos_por_descripcion: {e}")
         return []
+
+
+# ========== CONFIGURACIÓN BANCARIA ==========
+
+def obtener_datos_bancarios():
+    """Obtiene la lista de todos los bancos guardados para el vendedor"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT id, banco, codigo_banco, cedula_rif, telefono, titular 
+            FROM configuracion_bancaria 
+            ORDER BY id ASC
+        """)
+        resultados = cursor.fetchall()
+        conn.close()
+        
+        lista_bancos = []
+        for r in resultados:
+            lista_bancos.append({
+                'id': r['id'],
+                'banco': r['banco'] or '',
+                'codigo_banco': r['codigo_banco'] or '',
+                'cedula_rif': r['cedula_rif'] or '',
+                'telefono': r['telefono'] or '',
+                'titular': r['titular'] or ''
+            })
+        return lista_bancos
+    except Exception as e:
+        print(f"❌ Error al obtener datos bancarios: {e}")
+        return []
+
+def guardar_datos_bancarios(banco, codigo_banco, cedula_rif, telefono, titular):
+    """Guarda una nueva cuenta bancaria"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO configuracion_bancaria (banco, codigo_banco, cedula_rif, telefono, titular)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (banco, codigo_banco, cedula_rif, telefono, titular))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Error al guardar datos bancarios: {e}")
+        return False
+
+def eliminar_banco(banco_id):
+    """Elimina una cuenta bancaria por su ID"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM configuracion_bancaria WHERE id = %s", (banco_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Error al eliminar banco: {e}")
+        return False
 
 
 # ========== ALIAS PARA COMPATIBILIDAD ==========
