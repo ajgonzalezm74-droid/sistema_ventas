@@ -387,49 +387,70 @@ elif opcion == "💳 Créditos":
                 
                 with st.expander(f"👤 {nombre_cliente} - Deuda Total: Bs {deuda_total_cliente:,.2f} ({len(lista_creditos)} ventas)"):
                     
-                    # --- NUEVO: SELECTOR DE QR GLOBAL O POR VENTA ---
-                    st.markdown("### 📱 Generar QR de Pago")
-                    opcion_qr = st.radio(
-                        "¿Qué monto deseas cobrar?",
-                        ["Deuda Total del Cliente", "Venta Individual"],
-                        horizontal=True,
-                        key=f"radio_qr_{nombre_cliente}"
-                    )
+                    # --- NUEVO: TARJETA DE COBRO (SIN QR) ---
+                    st.markdown("### 📱 Datos para el Pago Móvil")
                     
-                    if opcion_qr == "Deuda Total del Cliente" and deuda_total_cliente > 0:
-                        if mis_bancos:
-                            opciones_bancos = {f"{b['banco']} ({b['codigo_banco']})": b for b in mis_bancos}
-                            banco_elegido_nombre = st.selectbox(
-                                "Selecciona a qué cuenta quieres que te paguen:", 
-                                list(opciones_bancos.keys()),
-                                key=f"banco_global_{nombre_cliente}"
-                            )
-                            banco_elegido = opciones_bancos[banco_elegido_nombre]
+                    if mis_bancos:
+                        # Selector de banco
+                        opciones_bancos = {f"{b['banco']} ({b['codigo_banco']})": b for b in mis_bancos}
+                        banco_elegido_nombre = st.selectbox(
+                            "Selecciona tu cuenta para recibir el pago:", 
+                            list(opciones_bancos.keys()),
+                            key=f"banco_global_{nombre_cliente}"
+                        )
+                        banco_elegido = opciones_bancos[banco_elegido_nombre]
+                        
+                        # Limpieza de datos (igual que antes)
+                        codigo_banco_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['codigo_banco']))[:4]
+                        cedula_limpia = re.sub(r'[^0-9]', '', str(banco_elegido['cedula_rif']))
+                        telefono_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['telefono']))
+                        if telefono_limpio.startswith('0'):
+                            telefono_limpio = telefono_limpio[1:]
                             
-                            codigo_banco_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['codigo_banco']))[:4]
-                            cedula_limpia = re.sub(r'[^0-9]', '', str(banco_elegido['cedula_rif']))
-                            telefono_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['telefono']))
-                            if telefono_limpio.startswith('0'):
-                                telefono_limpio = telefono_limpio[1:]
-                            
-                            texto_qr = f"{codigo_banco_limpio},{cedula_limpia},{telefono_limpio},{deuda_total_cliente:.2f},"
-                            texto_qr_encoded = urllib.parse.quote(texto_qr)
-                            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={texto_qr_encoded}"
-                            
-                            col_qr, col_info = st.columns([1, 2])
-                            with col_qr:
-                                st.image(url_qr, caption="Escanear para pagar TOTAL")
-                            with col_info:
-                                st.success(f"**Cobro Total: Bs {deuda_total_cliente:,.2f}**")
-                                st.write(f"**Banco:** {banco_elegido['banco']} ({codigo_banco_limpio})")
-                                st.write(f"**C.I/RIF:** {cedula_limpia}")
-                                st.write(f"**Teléfono:** {telefono_limpio}")
-                        else:
-                            st.warning("⚠️ Configura tus cuentas bancarias en el menú lateral.")
+                        # Crear un texto formateado para mostrar y copiar
+                        texto_cobro = f"""DATOS DE PAGO MÓVIL
+---------------------------
+Banco: {banco_elegido['banco']} ({codigo_banco_limpio})
+C.I/RIF: {cedula_limpia}
+Teléfono: {telefono_limpio}
+Monto: Bs {deuda_total_cliente:,.2f}
+---------------------------
+Titular: {banco_elegido.get('titular', '')}
+"""
+                        
+                        # Mostrar los datos visualmente bonitos
+                        col_monto, col_datos = st.columns([1, 2])
+                        with col_monto:
+                            st.success(f"**Cobro Total:**\n### Bs {deuda_total_cliente:,.2f}")
+                        with col_datos:
+                            st.info(f"""
+                            **Banco:** {banco_elegido['banco']} ({codigo_banco_limpio})  
+                            **C.I/RIF:** {cedula_limpia}  
+                            **Teléfono:** {telefono_limpio}  
+                            **Titular:** {banco_elegido.get('titular', 'No especificado')}
+                            """)
+                        
+                        # Botones de acción para enviar
+                        st.markdown("#### 📤 Enviar o Copiar Datos")
+                        
+                        # Botón 1: Copiar al portapapeles usando HTML/JS
+                        html_copiar = f"""
+                        <button onclick="navigator.clipboard.writeText(`{texto_cobro}`)" 
+                        style="background-color: #f63366; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">
+                        📋 Copiar Datos para WhatsApp
+                        </button>
+                        """
+                        st.components.v1.html(html_copiar, height=50)
+                        
+                        # Botón 2: Cuadro de texto por si el botón de copiar falla o quiere enviarlo manual
+                        st.text_area("O copia el texto de aquí:", value=texto_cobro, height=150, key=f"txt_{nombre_cliente}")
+                        
+                    else:
+                        st.warning("⚠️ Configura tus cuentas bancarias en el menú lateral.")
                     
                     st.markdown("---")
                     
-                    # --- LISTA DE VENTAS INDIVIDUALES ---
+                    # --- LISTA DE VENTAS INDIVIDUALES (Para abonar) ---
                     for idx, credito in enumerate(lista_creditos):
                         credito_id = credito.get('id_venta')
                         if credito_id is None: continue
@@ -457,33 +478,6 @@ elif opcion == "💳 Créditos":
                         st.markdown(f"**Productos:** {credito.get('productos', 'N/A')}")
                         
                         saldo = float(credito.get('saldo_pendiente') or 0)
-                        
-                        # --- SI ELIGIÓ VENTA INDIVIDUAL, MUESTRA EL QR DE ESTA VENTA ---
-                        if opcion_qr == "Venta Individual" and saldo > 0:
-                            if mis_bancos:
-                                opciones_bancos = {f"{b['banco']} ({b['codigo_banco']})": b for b in mis_bancos}
-                                banco_elegido_nombre = st.selectbox(
-                                    "Cuenta para esta venta:", 
-                                    list(opciones_bancos.keys()),
-                                    key=f"banco_ind_{credito_id}_{idx}"
-                                )
-                                banco_elegido = opciones_bancos[banco_elegido_nombre]
-                                
-                                codigo_banco_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['codigo_banco']))[:4]
-                                cedula_limpia = re.sub(r'[^0-9]', '', str(banco_elegido['cedula_rif']))
-                                telefono_limpio = re.sub(r'[^0-9]', '', str(banco_elegido['telefono']))
-                                if telefono_limpio.startswith('0'):
-                                    telefono_limpio = telefono_limpio[1:]
-                                
-                                texto_qr = f"{codigo_banco_limpio},{cedula_limpia},{telefono_limpio},{saldo:.2f},"
-                                texto_qr_encoded = urllib.parse.quote(texto_qr)
-                                url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={texto_qr_encoded}"
-                                
-                                col_qr, col_info = st.columns([1, 2])
-                                with col_qr:
-                                    st.image(url_qr, caption="Escanear Venta")
-                                with col_info:
-                                    st.info(f"**Monto: Bs {saldo:,.2f}**\n\n**Banco:** {banco_elegido['banco']} ({codigo_banco_limpio})\n\n**C.I:** {cedula_limpia}\n\n**Tlf:** {telefono_limpio}")
 
                         # --- FORMULARIO DE PAGO ---
                         st.markdown("##### 💰 Registrar Pago")
@@ -521,6 +515,7 @@ elif opcion == "💳 Créditos":
     except Exception as e:
         st.error(f"Error cargando créditos: {e}")
         st.code(traceback.format_exc())
+
 # ==============================================================================
 # SECCIÓN 6: REPORTES
 # ==============================================================================
